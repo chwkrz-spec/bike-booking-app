@@ -104,6 +104,18 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
       assigned_at INTEGER NOT NULL,
       items TEXT NOT NULL
     ) STRICT;
+    CREATE TABLE IF NOT EXISTS booking_substitutions (
+      booking_id TEXT PRIMARY KEY REFERENCES bookings(id),
+      revision INTEGER NOT NULL,
+      substituted_by TEXT NOT NULL,
+      substituted_at INTEGER NOT NULL,
+      items TEXT NOT NULL
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS booking_returns (
+      booking_id TEXT PRIMARY KEY REFERENCES bookings(id),
+      returned_by TEXT NOT NULL,
+      returned_at INTEGER NOT NULL
+    ) STRICT;
     CREATE TABLE IF NOT EXISTS confirmation_messages (
       booking_id TEXT PRIMARY KEY REFERENCES bookings(id),
       recipient TEXT NOT NULL,
@@ -145,15 +157,32 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
   `);
   const bookingRows = `
     SELECT b.id AS booking_id, b.payment_id, c.*, cart.items, cart.rider_heights,
-      assignment.assigned_by, assignment.assigned_at, assignment.items AS assigned_items
+      assignment.assigned_by, assignment.assigned_at, assignment.items AS assigned_items,
+      returned.returned_by, returned.returned_at, substitute.items AS allocated_items, substitute.revision
     FROM bookings b JOIN checkouts c ON c.id = b.checkout_id
     LEFT JOIN checkout_carts cart ON cart.checkout_id = c.id
     LEFT JOIN pickup_assignments assignment ON assignment.booking_id = b.id
+    LEFT JOIN booking_returns returned ON returned.booking_id = b.id
+    LEFT JOIN booking_substitutions substitute ON substitute.booking_id = b.id
   `;
   const listBookings = db.prepare(bookingRows + ' WHERE c.shop_id = ? ORDER BY c.pickup_at, b.id');
   const selectStaffBooking = db.prepare(bookingRows + ' WHERE c.shop_id = ? AND b.id = ?');
   const recordAssignment = db.prepare('INSERT INTO pickup_assignments VALUES (?, ?, ?, ?)');
   const assignmentExists = db.prepare('SELECT 1 FROM pickup_assignments WHERE booking_id = ?');
+
+  const selectSubstitution = db.prepare('SELECT items FROM booking_substitutions WHERE booking_id = ?');
+  const saveSubstitution = db.prepare(`
+    INSERT INTO booking_substitutions (booking_id, revision, substituted_by, substituted_at, items)
+    VALUES (?, 1, ?, ?, ?)
+    ON CONFLICT(booking_id) DO UPDATE SET
+      revision = revision + 1, substituted_by = excluded.substituted_by,
+      substituted_at = excluded.substituted_at, items = excluded.items
+  `);
+  const recordReturn = db.prepare('INSERT INTO booking_returns VALUES (?, ?, ?)');
+  const openAssignments = db.prepare(bookingRows + `
+    WHERE c.shop_id = ? AND c.status = 'confirmed' AND assignment.booking_id IS NOT NULL
+      AND returned.booking_id IS NULL
+  `);
   const confirmCheckout = db.prepare("UPDATE checkouts SET status = 'confirmed' WHERE id = ?");
   const refundCheckout = db.prepare("UPDATE checkouts SET status = 'refund_started' WHERE id = ?");
   const verifyPayment = db.prepare("UPDATE payments SET status = 'verified' WHERE id = ?");
@@ -170,8 +199,15 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     SELECT c.*, cart.items FROM checkouts c LEFT JOIN checkout_carts cart ON cart.checkout_id = c.id WHERE c.id = ?
   `);
   const occupied = db.prepare(`
-    SELECT c.*, cart.items FROM checkouts c LEFT JOIN checkout_carts cart ON cart.checkout_id = c.id
-    WHERE c.shop_id = ? AND c.return_at > ?
+    SELECT c.*, cart.items, assignment.items AS assigned_items, returned.returned_at, substitute.items AS allocated_items
+    FROM checkouts c LEFT JOIN checkout_carts cart ON cart.checkout_id = c.id
+    LEFT JOIN bookings b ON b.checkout_id = c.id
+    LEFT JOIN pickup_assignments assignment ON assignment.booking_id = b.id
+    LEFT JOIN booking_returns returned ON returned.booking_id = b.id
+    LEFT JOIN booking_substitutions substitute ON substitute.booking_id = b.id
+    WHERE c.shop_id = ?
+      AND (COALESCE(returned.returned_at, c.return_at) > ?
+        OR (assignment.booking_id IS NOT NULL AND returned.booking_id IS NULL))
       AND (c.status = 'confirmed' OR (c.status IN ('held', 'payment') AND c.deadline > ?))
   `);
   const insertCheckout = db.prepare(`
@@ -183,14 +219,58 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
   const cancellations = openBookingCancellations(db, {
     policies, refunds, simulator, management, now,
     itemsForBooking: (row) => savedItems(selectCheckout.get(row.id)),
+    allocationForBooking: (row) => {
+      const substitution = selectSubstitution.get(row.booking_id);
+      return substitution && JSON.parse(substitution.items);
+    },
     canCancelBooking: (row) => row.status === 'confirmed' && !assignmentExists.get(row.booking_id),
   });
 
-  function availability(shopId, inventory, timestamp, bufferMinutes = 0) {
-    const commitments = occupied.all(shopId, timestamp - bufferMinutes * 60_000, timestamp).map((row) => ({
-      pickupAt: row.pickup_at, returnAt: row.return_at, items: savedItems(row),
-    }));
-    return stockForPeriod(inventory, commitments, bufferMinutes);
+  function overdue(row, time) {
+    return Boolean(row.assigned_items && row.returned_at === null && row.return_at <= time);
+  }
+
+  function allocatedItems(row) {
+    return row.allocated_items ? JSON.parse(row.allocated_items) : savedItems(row);
+  }
+
+  function commitment(row, time) {
+    return {
+      pickupAt: row.pickup_at,
+      returnAt: row.returned_at ?? (overdue(row, time) ? Infinity : row.return_at),
+      items: allocatedItems(row),
+    };
+  }
+
+  function commitments(shopId, time, bufferMinutes) {
+    return occupied.all(shopId, time - bufferMinutes * 60_000, time);
+  }
+
+  function availability(shopId, inventory, timestamp, bufferMinutes = 0, excludeCheckoutId) {
+    const stockClaims = commitments(shopId, timestamp, bufferMinutes)
+      .filter(({ id }) => id !== excludeCheckoutId)
+      .map((row) => commitment(row, timestamp));
+    return stockForPeriod(inventory, stockClaims, bufferMinutes);
+  }
+
+  function confirmedStock(shopId, time) {
+    const { settings: { turnaroundBufferMinutes: bufferMinutes } } = management.publicShop(shopId);
+    const inventory = management.inventory(shopId);
+    const confirmed = commitments(shopId, time, bufferMinutes).filter(({ status }) => status === 'confirmed');
+    return { inventory, confirmed, bufferMinutes };
+  }
+
+  function remainingPeriod(row, time) {
+    return { pickupAt: Math.max(row.pickup_at, time), returnAt: row.return_at };
+  }
+
+  function riskItems(row, time, stock) {
+    if (row.status !== 'confirmed' || row.assigned_items || row.return_at <= time) return [];
+    const { inventory, confirmed, bufferMinutes } = stock;
+    const others = confirmed.filter(({ id }) => id !== row.id).map((other) => commitment(other, time));
+    const quantities = stockForPeriod(inventory, others, bufferMinutes)(remainingPeriod(row, time));
+    return allocatedItems(row).filter(({ itemId, quantity }) => (quantities[itemId] ?? 0) < quantity)
+      .map(({ itemId, name, quantity }) => ({ itemId, name, shortBy: quantity - (quantities[itemId] ?? 0) }));
   }
 
   function available(items, quantities) {
@@ -223,6 +303,20 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     } : null;
   }
 
+  function equipmentReturn(row) {
+    return row.returned_at === null ? null : {
+      returnedAt: new Date(row.returned_at).toISOString(),
+      returnedBy: row.returned_by,
+    };
+  }
+
+  function staffBooking(actor, shopId, bookingId) {
+    management.accessible(actor, shopId);
+    const row = selectStaffBooking.get(shopId, bookingId);
+    if (!row) throw new OperationError(404, 'Nie znaleziono rezerwacji.');
+    return row;
+  }
+
   function canAssignUnits(row, time) {
     return row.status === 'confirmed' && !row.assigned_items && row.pickup_at <= time && time < row.return_at;
   }
@@ -234,6 +328,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     cancelRenterBooking: (token, input) => transaction(() => cancellations.renterCancel(token, input)),
     cancelPartnerBooking: (actor, id) => transaction(() => cancellations.partnerCancel(actor, id)),
     bookingRefunds: cancellations.staffRefunds,
+    markNoShow: (actor, shopId, id) => transaction(() => cancellations.markNoShow(actor, shopId, id)),
     widgets: openWidgets(db),
     offer(shopId, pickupAt) {
       const time = now();
@@ -329,7 +424,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         const time = now();
         const current = checkout(id);
         const payment = checkoutPayment.get(id);
-        if (['confirmed', 'cancelled', 'refund_started'].includes(current.status)) return describeCheckout(current, time, payment);
+        if (['confirmed', 'cancelled', 'no_show', 'refund_started'].includes(current.status)) return describeCheckout(current, time, payment);
         if (current.deadline <= time) throw new OperationError(409, 'Blokada wygasła. Wybierz termin ponownie.');
         if (payment) return describeCheckout(current, time, payment);
 
@@ -379,13 +474,13 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         if (!simulator.verify(id)) return { status: expired ? 'expired' : 'payment' };
         const startedRefund = simulator.refund(id);
         const originalSlot = { pickupAt: current.pickup_at, returnAt: current.return_at };
-        const canReclaim = () => {
+        const canConfirm = () => {
           const { settings } = management.publicShop(current.shop_id);
           const inventory = management.inventory(current.shop_id);
-          const quantitiesFor = availability(current.shop_id, inventory, time, settings.turnaroundBufferMinutes);
+          const quantitiesFor = availability(current.shop_id, inventory, time, settings.turnaroundBufferMinutes, current.id);
           return available(savedItems(current), quantitiesFor(originalSlot));
         };
-        if (startedRefund || (expired && (originalSlot.pickupAt <= time || !canReclaim()))) {
+        if (startedRefund || (expired && originalSlot.pickupAt <= time) || !canConfirm()) {
           const refund = startedRefund ?? simulator.startFullRefund(id, time);
           refundCheckout.run(current.id);
           insertFailureMessage.run(id, current.email, 'Zwrot płatności za rezerwację',
@@ -418,10 +513,8 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     },
     assignPickup(actor, shopId, bookingId, input) {
       return transaction(() => {
-        management.accessible(actor, shopId);
-        const row = selectStaffBooking.get(shopId, bookingId);
-        if (!row) throw new OperationError(404, 'Nie znaleziono rezerwacji.');
-        const bikes = savedItems(row).filter(({ kind }) => kind === 'bike');
+        const row = staffBooking(actor, shopId, bookingId);
+        const bikes = allocatedItems(row).filter(({ kind }) => kind === 'bike');
         const invalid = () => new OperationError(400, 'Wpisz różne oznaczenia wszystkich wydawanych rowerów (do 60 znaków).');
         if (!Array.isArray(input.items) || input.items.length !== bikes.length) throw invalid();
         const seen = new Set();
@@ -445,26 +538,87 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         if (!canAssignUnits(row, time)) {
           throw new OperationError(409, 'Rowery można przydzielić przy odbiorze, przed terminem zwrotu.');
         }
+        const active = openAssignments.all(shopId);
+        const labels = new Set(active.flatMap(({ assigned_items }) =>
+          JSON.parse(assigned_items).flatMap(({ units }) => units.map((unit) => unit.toLowerCase()))));
+        const inventory = management.inventory(shopId);
+        const physicalClaims = active.map((rental) => ({ ...commitment(rental, time), returnAt: Infinity }));
+        const freeNow = stockForPeriod(inventory, physicalClaims)({ pickupAt: time, returnAt: time + 1 });
+        if (!available(allocatedItems(row), freeNow) || [...seen].some((label) => labels.has(label))) {
+          throw new OperationError(409, 'Sprzęt jest niedostępny lub nadal znajduje się u innego klienta.');
+        }
         recordAssignment.run(bookingId, actor.username, time, encoded);
         return pickupAssignment(selectStaffBooking.get(shopId, bookingId));
+      });
+    },
+    substituteEquipment(actor, shopId, bookingId, { fromItemId, toItemId, quantity, revision }) {
+      return transaction(() => {
+        const row = staffBooking(actor, shopId, bookingId);
+        const time = now();
+        if (revision !== (row.revision ?? 0)) {
+          throw new OperationError(409, 'Rezerwacja została zmieniona. Odśwież szczegóły przed zmianą sprzętu.');
+        }
+        const current = allocatedItems(row);
+        const stock = confirmedStock(shopId, time);
+        const { inventory, bufferMinutes } = stock;
+        const original = current.find(({ itemId }) => itemId === fromItemId);
+        const substitute = inventory.find(({ id }) => id === toItemId);
+        if (!original || !substitute || original.kind !== substitute.kind || fromItemId === toItemId ||
+            !Number.isInteger(quantity) || quantity < 1 || quantity > original.quantity) {
+          throw new OperationError(400, 'Wybierz zamiennik tego samego rodzaju i prawidłową liczbę sztuk.');
+        }
+        if (!riskItems(row, time, stock).some(({ itemId }) => itemId === fromItemId)) {
+          throw new OperationError(409, 'Zamiennik można uzgodnić dla zagrożonej pozycji przed wydaniem sprzętu.');
+        }
+
+        const counts = new Map(current.map(({ itemId, quantity }) => [itemId, quantity]));
+        counts.set(fromItemId, original.quantity - quantity);
+        counts.set(toItemId, (counts.get(toItemId) ?? 0) + quantity);
+        const quantities = availability(shopId, inventory, time, bufferMinutes, row.id)(remainingPeriod(row, time));
+        if (quantities[toItemId] < counts.get(toItemId)) {
+          throw new OperationError(409, 'Wybrany zamiennik jest już zajęty w tym terminie.');
+        }
+        const items = inventory.filter(({ id }) => counts.get(id) > 0)
+          .map(({ id: itemId, name, kind }) => ({ itemId, name, kind, quantity: counts.get(itemId) }));
+        saveSubstitution.run(bookingId, actor.username, time, JSON.stringify(items));
+        return { allocatedItems: items, substitutionRevision: revision + 1 };
+      });
+    },
+    returnEquipment(actor, shopId, bookingId) {
+      return transaction(() => {
+        const row = staffBooking(actor, shopId, bookingId);
+        if (row.returned_at !== null) return equipmentReturn(row);
+        if (row.status !== 'confirmed' || !row.assigned_items) {
+          throw new OperationError(409, 'Zwrot można odnotować po wydaniu sprzętu.');
+        }
+        recordReturn.run(bookingId, actor.username, now());
+        return equipmentReturn(selectStaffBooking.get(shopId, bookingId));
       });
     },
     staffBookings(actor, shopId) {
       const ids = shopId === undefined ? management.shops(actor).map(({ id }) => id) : [shopId];
       if (shopId !== undefined) management.accessible(actor, shopId);
+      const time = now();
+      const stock = new Map(ids.map((id) => [id, confirmedStock(id, time)]));
       return ids.flatMap((id) => listBookings.all(id))
         .sort((left, right) => left.pickup_at - right.pickup_at || left.booking_id.localeCompare(right.booking_id))
         .map((row) => ({
-          ...describeCheckout(row, now()),
+          ...describeCheckout(row, time),
           id: row.booking_id,
           categoryName: savedItems(row).find(({ kind }) => kind === 'bike').name,
-          ...cancellations.staffSummary(actor, row),
+          ...cancellations.staffSummary(actor, row, time),
           email: row.email,
           phone: row.phone,
           riderHeight: row.rider_height,
           riderHeights: row.rider_heights ? JSON.parse(row.rider_heights) : [row.rider_height],
-          canAssignUnits: canAssignUnits(row, now()),
+          canAssignUnits: canAssignUnits(row, time),
           pickupAssignment: pickupAssignment(row),
+          canReturn: row.status === 'confirmed' && Boolean(row.assigned_items) && row.returned_at === null,
+          equipmentReturn: equipmentReturn(row),
+          overdue: overdue(row, time),
+          atRiskItems: riskItems(row, time, stock.get(row.shop_id)),
+          allocatedItems: allocatedItems(row),
+          substitutionRevision: row.revision ?? 0,
         }));
     },
     close() {

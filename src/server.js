@@ -127,9 +127,14 @@ export function createApp({
         if (assignment && method === 'POST') {
           return json(response, 200, management.assignment(actor, assignment[1], await staffBody(request)));
         }
-        const pickup = path.match(/^\/api\/staff\/shops\/([\w-]+)\/bookings\/([\w-]+)\/pickup$/);
-        if (pickup && method === 'POST') {
-          return json(response, 200, booking.assignPickup(actor, pickup[1], pickup[2], await staffBody(request)));
+        const fulfilment = path.match(/^\/api\/staff\/shops\/([\w-]+)\/bookings\/([\w-]+)\/(pickup|return|no-show|substitute)$/);
+        if (fulfilment && method === 'POST') {
+          const [, shopId, bookingId, action] = fulfilment;
+          const input = await staffBody(request);
+          if (action === 'pickup') return json(response, 200, booking.assignPickup(actor, shopId, bookingId, input));
+          if (action === 'substitute') return json(response, 200, booking.substituteEquipment(actor, shopId, bookingId, input));
+          if (action === 'return') return json(response, 200, booking.returnEquipment(actor, shopId, bookingId));
+          return json(response, 200, booking.markNoShow(actor, shopId, bookingId));
         }
         const shopRoute = path.match(/^\/api\/staff\/shops\/([\w-]+)\/(settings|stock|catalog|bookings)$/);
         if (shopRoute) {
