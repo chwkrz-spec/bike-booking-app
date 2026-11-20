@@ -1,4 +1,5 @@
 import { formatAmount, formatSlot, get, request, showError } from './common.js';
+import { amendmentControls } from './staff-amendments.js';
 import { catalogForms, equipmentOperations, pickupControls, stockForms } from './staff-equipment.js';
 
 import { setupWidgets, showWidgetShops } from './staff-widgets.js';
@@ -58,6 +59,7 @@ function displayBookings(bookings, stock) {
         return 'Anulowano rezerwację.';
       });
     }
+    status.append(amendmentControls(booking, stock, saves, refreshShop));
     const pickup = pickupControls(booking, saves, refreshShop);
     if (pickup) status.append(pickup);
     status.append(equipmentOperations(booking, stock, saves, refreshShop));

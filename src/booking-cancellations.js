@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { amendedBooking } from './booking-amendments.js';
 import { cancellationRefund } from './cancellation-policy.js';
 import { OperationError } from './operation-error.js';
 
@@ -19,13 +20,15 @@ export function openBookingCancellations(db, {
   const tokenByBooking = db.prepare('SELECT token FROM booking_links WHERE booking_id = ?');
   const saveToken = db.prepare('INSERT INTO booking_links VALUES (?, ?) ON CONFLICT(booking_id) DO NOTHING');
   const renterBooking = db.prepare(`
-    SELECT b.id AS booking_id, b.payment_id, c.* FROM booking_links l
+    SELECT b.id AS booking_id, b.payment_id, c.*, amended.state AS amendment_state FROM booking_links l
     JOIN bookings b ON b.id = l.booking_id JOIN checkouts c ON c.id = b.checkout_id
+    LEFT JOIN booking_amendment_state amended ON amended.booking_id = b.id
     WHERE l.token = ?
   `);
   const staffBooking = db.prepare(`
-    SELECT b.id AS booking_id, b.payment_id, c.* FROM bookings b
-    JOIN checkouts c ON c.id = b.checkout_id WHERE b.id = ?
+    SELECT b.id AS booking_id, b.payment_id, c.*, amended.state AS amendment_state FROM bookings b
+    JOIN checkouts c ON c.id = b.checkout_id
+    LEFT JOIN booking_amendment_state amended ON amended.booking_id = b.id WHERE b.id = ?
   `);
   const readCancellation = db.prepare('SELECT * FROM booking_cancellations WHERE booking_id = ?');
   const recordCancellation = db.prepare('INSERT INTO booking_cancellations VALUES (?, ?, ?)');
@@ -34,7 +37,7 @@ export function openBookingCancellations(db, {
   function find(statement, id) {
     const booking = statement.get(id);
     if (!booking) throw new OperationError(404, 'Nie znaleziono rezerwacji.');
-    return booking;
+    return amendedBooking(booking);
   }
 
   function view(booking, time) {
@@ -79,7 +82,7 @@ export function openBookingCancellations(db, {
       throw new OperationError(409, 'Nie można anulować tej rezerwacji.');
     }
 
-    const amount = cancellationRefund(booking, policies.agreed(booking), time, source);
+    const amount = Math.min(cancellationRefund(booking, policies.agreed(booking), time, source), refunds.remaining(booking.payment_id, booking.total));
     if (expectedRefund !== undefined && expectedRefund !== amount) {
       throw new OperationError(409, 'Kwota zwrotu się zmieniła. Sprawdź aktualną kwotę przed anulowaniem.');
     }

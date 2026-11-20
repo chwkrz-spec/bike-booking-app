@@ -16,7 +16,8 @@ function describe(row) {
     platformDebit: row.platform_debit,
     reason: row.reason,
     requestedAt: new Date(row.requested_at).toISOString(),
-    status: row.status,
+    status: row.effective_status,
+    ...(row.resolved_at !== null && { resolvedAt: new Date(row.resolved_at).toISOString() }),
     ...(row.approved_by && { approvedBy: row.approved_by }),
     ...(row.details && { details: JSON.parse(row.details) }),
   };
@@ -39,12 +40,38 @@ export function openRefunds(db) {
       details TEXT,
       UNIQUE (payment_id, request_key)
     ) STRICT;
+    CREATE TABLE IF NOT EXISTS refund_resolutions (
+      refund_id TEXT PRIMARY KEY REFERENCES refund_requests(id),
+      status TEXT NOT NULL,
+      resolved_at INTEGER NOT NULL
+    ) STRICT;
   `);
-  const find = db.prepare('SELECT * FROM refund_requests WHERE payment_id = ? AND request_key = ?');
-  const list = db.prepare('SELECT * FROM refund_requests WHERE payment_id = ? ORDER BY rowid');
+  const projection = `
+    SELECT request.*, COALESCE(resolution.status, request.status) AS effective_status,
+      resolution.resolved_at
+    FROM refund_requests request LEFT JOIN refund_resolutions resolution ON resolution.refund_id = request.id
+  `;
+
+  const find = db.prepare(projection + ' WHERE request.payment_id = ? AND request.request_key = ?');
+  const list = db.prepare(projection + ' WHERE request.payment_id = ? ORDER BY request.rowid');
+  const byId = db.prepare(projection + ' WHERE request.id = ?');
+  const saveResolution = db.prepare('INSERT INTO refund_resolutions VALUES (?, ?, ?)');
   const save = db.prepare('INSERT INTO refund_requests VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
 
   return {
+    remaining(paymentId, total) {
+      return total - list.all(paymentId).reduce((sum, entry) => sum + entry.amount, 0);
+    },
+    resolve(id, status, time) {
+      if (!['completed', 'failed'].includes(status)) throw new OperationError(400, 'Nieprawidłowy wynik zwrotu.');
+      const row = byId.get(id);
+      if (!row || row.reason !== 'pickup-amendment') throw new OperationError(404, 'Nie znaleziono zwrotu.');
+      if (row.status !== 'pending' || !['pending', status].includes(row.effective_status)) {
+        throw new OperationError(409, 'Zwrot ma już inny wynik.');
+      }
+      if (row.effective_status === 'pending') saveResolution.run(id, status, time);
+      return describe(byId.get(id));
+    },
     getByKey(paymentId, key) {
       const row = find.get(paymentId, key);
       return row && describe(row);

@@ -15,6 +15,7 @@ const assets = new Map([
   ['/assets/payment.js', ['payment.js', 'text/javascript']],
   ['/assets/booking.js', ['booking.js', 'text/javascript']],
   ['/assets/staff.js', ['staff.js', 'text/javascript']],
+  ['/assets/staff-amendments.js', ['staff-amendments.js', 'text/javascript']],
   ['/assets/staff-equipment.js', ['staff-equipment.js', 'text/javascript']],
   ['/assets/staff-widgets.js', ['staff-widgets.js', 'text/javascript']],
 ]);
@@ -127,6 +128,19 @@ export function createApp({
         if (assignment && method === 'POST') {
           return json(response, 200, management.assignment(actor, assignment[1], await staffBody(request)));
         }
+        const amendment = path.match(/^\/api\/staff\/shops\/([\w-]+)\/bookings\/([\w-]+)\/(amendment|change)(\/preview)?$/);
+        if (amendment && method === 'POST') {
+          const [, shopId, bookingId, action, preview] = amendment;
+          const input = await staffBody(request);
+          if (action === 'change') {
+            const result = preview ? booking.previewBookingChange(actor, shopId, bookingId, input)
+              : booking.approveBookingChange(actor, shopId, bookingId, input);
+            return json(response, 200, result);
+          }
+          const result = preview ? booking.previewPickupAmendment(actor, shopId, bookingId, input)
+            : booking.approvePickupAmendment(actor, shopId, bookingId, input);
+          return json(response, 200, result);
+        }
         const fulfilment = path.match(/^\/api\/staff\/shops\/([\w-]+)\/bookings\/([\w-]+)\/(pickup|return|no-show|substitute)$/);
         if (fulfilment && method === 'POST') {
           const [, shopId, bookingId, action] = fulfilment;
@@ -174,6 +188,10 @@ export function createApp({
       if (simulated && method === 'GET' && !simulated[2]) return json(response, 200, booking.paymentSession(simulated[1]));
       if (simulated && method === 'POST' && simulated[2]) {
         return json(response, 200, booking.simulatePayment(simulated[1], await body(request)));
+      }
+      const refundResolution = path.match(/^\/api\/simulator\/refunds\/([\w-]+)$/);
+      if (allowSimulatedRefunds && refundResolution && method === 'POST') {
+        return json(response, 200, booking.simulateRefundResolution(refundResolution[1], await body(request)));
       }
       const simulatedRefund = path.match(/^\/api\/simulator\/payments\/([\w-]+)\/refund$/);
       if (allowSimulatedRefunds && method === 'POST' && simulatedRefund) {
