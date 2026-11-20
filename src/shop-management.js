@@ -100,6 +100,10 @@ export function openShopManagement(db, { staffPassword, demoOwners = [], transac
       terms TEXT NOT NULL,
       settings TEXT NOT NULL
     ) STRICT;
+    CREATE TABLE IF NOT EXISTS shop_renter_copy (
+      shop_id TEXT PRIMARY KEY REFERENCES shops(id),
+      content TEXT NOT NULL
+    ) STRICT;
     CREATE TABLE IF NOT EXISTS shop_catalog (
       shop_id TEXT NOT NULL REFERENCES shops(id),
       item_id TEXT NOT NULL,
@@ -158,6 +162,18 @@ export function openShopManagement(db, { staffPassword, demoOwners = [], transac
   const deleteAssignment = db.prepare('DELETE FROM shop_assignments WHERE username = ? AND shop_id = ?');
   const selectPartner = db.prepare('SELECT seller FROM partners WHERE id = ?');
   const updatePartner = db.prepare('UPDATE partners SET seller = ? WHERE id = ?');
+  const readRenterCopy = db.prepare('SELECT content FROM shop_renter_copy WHERE shop_id = ?');
+  const saveRenterCopy = db.prepare(`
+    INSERT INTO shop_renter_copy VALUES (?, ?)
+    ON CONFLICT(shop_id) DO UPDATE SET content = excluded.content
+  `);
+  const copyLimits = { description: 2000, nameEn: 120, descriptionEn: 2000, termsEn: 8000 };
+  function copyForShop(id) {
+    const saved = readRenterCopy.get(id);
+    const defaults = { description: '', nameEn: '', descriptionEn: '', termsEn: '' };
+    return saved ? { ...defaults, ...JSON.parse(saved.content) } : defaults;
+  }
+
   const updateSettings = db.prepare('UPDATE shops SET settings = ? WHERE id = ?');
   const selectCatalog = db.prepare('SELECT item_id, item FROM shop_catalog WHERE shop_id = ? ORDER BY rowid');
   const upsertEquipment = db.prepare(`
@@ -229,10 +245,25 @@ export function openShopManagement(db, { staffPassword, demoOwners = [], transac
       const row = selectShop.get(id);
       if (!row) throw missing();
       return {
-        shop: { id: row.id, name: row.name, seller: JSON.parse(row.seller), terms: row.terms },
+        shop: { id: row.id, name: row.name, seller: JSON.parse(row.seller), terms: row.terms, ...copyForShop(id) },
         settings: { ...defaultSettings, ...JSON.parse(row.settings) },
         partnerId: row.partner_id,
       };
+    },
+    renterCopy(actor, shopId, input) {
+      requireOwner(actor);
+      accessible(actor, shopId);
+      const copy = copyForShop(shopId);
+      if (input === undefined) return copy;
+      return transaction(() => {
+        const fields = Object.keys(input);
+        if (!fields.length || fields.some((key) => !Object.hasOwn(copyLimits, key) ||
+            typeof input[key] !== 'string' || input[key].trim().length > copyLimits[key])) throw badSettings();
+        const content = { ...copyForShop(shopId) };
+        for (const key of fields) content[key] = input[key].trim();
+        saveRenterCopy.run(shopId, JSON.stringify(content));
+        return content;
+      });
     },
     accessible,
     settings,

@@ -11,6 +11,7 @@ const dayNames = {
 };
 const shopSelect = get('staff-shop');
 const shopForm = get('shop-settings');
+const renterCopyForm = get('shop-renter-copy');
 const copyShopForm = get('copy-shop-configuration');
 const partnerForm = get('partner-settings');
 const policyForm = get('cancellation-policy');
@@ -134,9 +135,9 @@ async function refreshShop() {
   if (!shopSelect.value) return;
   try {
     const catalogPath = staffShopPath('catalog');
-    const [bookings, stock, settings, catalog] = await Promise.all([
+    const [bookings, stock, settings, catalog, renterCopy] = await Promise.all([
       request(staffShopPath('bookings')), request(staffShopPath('stock')), request(staffShopPath('settings')),
-      owner ? request(catalogPath) : [], loadAssisted,
+      owner ? request(catalogPath) : [], owner ? request(staffShopPath('renter-copy')) : null, loadAssisted,
     ]);
     if (selected !== viewingShop) return;
     displayBookings(bookings, stock);
@@ -144,6 +145,8 @@ async function refreshShop() {
     get('staff-catalog').replaceChildren(...catalogForms(catalog, catalogPath, saves, refreshShop));
     displaySettings(settings);
     if (owner) {
+      for (const [field, value] of Object.entries(renterCopy)) renterCopyForm.elements[field].value = value;
+      renterCopyForm.hidden = false;
       const sources = Array.from(shopSelect.options).filter(({ value }) => value !== shopSelect.value);
       copyShopForm.elements.sourceShopId.replaceChildren(new Option('Wybierz punkt', ''),
         ...sources.map(({ text, value }) => new Option(text, value)));
@@ -208,6 +211,12 @@ function saves(form, callback) {
   });
 }
 
+saves(renterCopyForm, async () => {
+  const shopId = shopSelect.value;
+  await request(staffShopPath('renter-copy'), formValues(renterCopyForm));
+  if (shopSelect.value === shopId) await refreshAssistedBooking(shopId);
+  return 'Zapisano treści dla klientów.';
+});
 saves(copyShopForm, async () => {
   await request(staffShopPath('copy-configuration'), formValues(copyShopForm));
   await refreshShop();
@@ -268,6 +277,7 @@ assignmentForm.elements.assigned.addEventListener('change', () => {
 try {
   const session = await request('/api/staff/session');
   owner = session.role === 'owner';
+  get('owner-dashboard-link').hidden = !owner;
   for (const id of ['owner-schedule', 'owner-catalog', 'partner-admin', 'policy-admin', 'member-admin']) get(id).hidden = !owner;
   await refreshShops();
   if (owner) {

@@ -2,9 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { amendedBooking } from './booking-amendments.js';
 import { cancellationRefund } from './cancellation-policy.js';
 import { OperationError } from './operation-error.js';
+import { renterItem, renterShop } from './renter-language.js';
 
 export function openBookingCancellations(db, {
-  policies, refunds, simulator, management, now, itemsForBooking, allocationForBooking, canCancelBooking,
+  policies, refunds, simulator, management, now, languageOf, itemsForBooking, allocationForBooking, canCancelBooking,
 }) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS booking_links (
@@ -40,7 +41,7 @@ export function openBookingCancellations(db, {
     return amendedBooking(booking);
   }
 
-  function view(booking, time) {
+  function view(booking, time, language = 'pl') {
     const policy = policies.agreed(booking);
     const cancellation = readCancellation.get(booking.booking_id);
     const refund = cancellation && refunds.getByKey(booking.payment_id, 'whole-booking-cancellation');
@@ -48,9 +49,10 @@ export function openBookingCancellations(db, {
     const allocation = allocationForBooking(booking);
     return {
       id: booking.booking_id,
-      shopName: management.publicShop(booking.shop_id).shop.name,
-      items: itemsForBooking(booking),
-      ...(allocation && { allocatedItems: allocation }),
+      language,
+      shopName: renterShop(management.publicShop(booking.shop_id).shop, language).name,
+      items: itemsForBooking(booking).map((item) => renterItem(item, language)),
+      ...(allocation && { allocatedItems: allocation.map((item) => renterItem(item, language)) }),
       pickupAt: new Date(booking.pickup_at).toISOString(),
       returnAt: new Date(booking.return_at).toISOString(),
       total: booking.total,
@@ -73,8 +75,9 @@ export function openBookingCancellations(db, {
   }
 
   function cancel(booking, time, source, { approvedBy, expectedRefund } = {}) {
+    const language = source === 'renter' ? languageOf(booking) : 'pl';
     const previous = readCancellation.get(booking.booking_id);
-    if (previous && (previous.source === 'no-show') === (source === 'no-show')) return view(booking, time);
+    if (previous && (previous.source === 'no-show') === (source === 'no-show')) return view(booking, time, language);
     if (source === 'no-show' && !canMarkNoShow(booking, time)) {
       throw new OperationError(409, 'Nie można oznaczyć No-Show przed upływem czasu oczekiwania lub po wydaniu sprzętu.');
     }
@@ -94,7 +97,7 @@ export function openBookingCancellations(db, {
     recordCancellation.run(booking.booking_id, source, time);
     const status = source === 'no-show' ? 'no_show' : 'cancelled';
     release.run(status, booking.id);
-    return view({ ...booking, status }, time);
+    return view({ ...booking, status }, time, language);
   }
 
   return {
@@ -103,7 +106,8 @@ export function openBookingCancellations(db, {
       return '/booking/' + tokenByBooking.get(bookingId).token;
     },
     renterView(token) {
-      return view(find(renterBooking, token), now());
+      const booking = find(renterBooking, token);
+      return view(booking, now(), languageOf(booking));
     },
     renterCancel(token, { expectedRefund }) {
       return cancel(find(renterBooking, token), now(), 'renter', { expectedRefund });

@@ -9,12 +9,15 @@ import { OperationError } from './operation-error.js';
 const assets = new Map([
   ['/assets/styles.css', ['styles.css', 'text/css']],
   ['/assets/common.js', ['common.js', 'text/javascript']],
+  ['/assets/renter-language.js', ['renter-language.js', 'text/javascript']],
   ['/assets/widget.js', ['widget.js', 'text/javascript']],
   ['/assets/widget-context.js', ['widget-context.js', 'text/javascript']],
   ['/assets/widget-popup.js', ['widget-popup.js', 'text/javascript']],
   ['/assets/payment.js', ['payment.js', 'text/javascript']],
   ['/assets/booking.js', ['booking.js', 'text/javascript']],
   ['/assets/staff.js', ['staff.js', 'text/javascript']],
+  ['/assets/owner-dashboard.js', ['owner-dashboard.js', 'text/javascript']],
+  ['/assets/owner-dashboard.css', ['owner-dashboard.css', 'text/css']],
   ['/assets/staff-amendments.js', ['staff-amendments.js', 'text/javascript']],
   ['/assets/staff-assisted.js', ['staff-assisted.js', 'text/javascript']],
   ['/assets/staff-checkout.js', ['staff-checkout.js', 'text/javascript']],
@@ -81,14 +84,21 @@ export function createApp({
       const method = request.method;
       const checkout = path.match(/^\/api\/checkouts\/([\w-]+)$/);
 
-      if (path === '/staff' || path.startsWith('/api/staff/')) {
+      if (path === '/staff' || path === '/staff/owner-dashboard' || path.startsWith('/api/staff/')) {
         const actor = management.authenticate(request.headers.authorization);
         if (!actor) {
           response.setHeader('WWW-Authenticate', 'Basic realm="Panel pokazowy"');
           return json(response, 401, { error: 'Wymagane logowanie obsługi.' });
         }
         if (method === 'GET' && path === '/staff') return await file(response, 'staff.html');
+        if (method === 'GET' && path === '/staff/owner-dashboard') {
+          if (actor.role !== 'owner') throw new OperationError(403, 'Brak uprawnień do panelu właściciela.');
+          return await file(response, 'owner-dashboard.html');
+        }
         if (path === '/api/staff/session' && method === 'GET') return json(response, 200, { role: actor.role });
+        if (path === '/api/staff/owner-dashboard' && method === 'GET') {
+          return json(response, 200, booking.ownerDashboard(actor, Object.fromEntries(url.searchParams)));
+        }
         if (path === '/api/staff/bookings' && method === 'GET') {
           return json(response, 200, booking.staffBookings(actor));
         }
@@ -171,9 +181,13 @@ export function createApp({
         if (shopCopy && method === 'POST') {
           return json(response, 200, management.copyConfiguration(actor, shopCopy[1], await staffBody(request)));
         }
-        const shopRoute = path.match(/^\/api\/staff\/shops\/([\w-]+)\/(settings|stock|catalog|bookings)$/);
+        const shopRoute = path.match(/^\/api\/staff\/shops\/([\w-]+)\/(settings|stock|catalog|bookings|renter-copy)$/);
         if (shopRoute) {
           const [, shopId, resource] = shopRoute;
+          if (resource === 'renter-copy') {
+            if (method === 'GET') return json(response, 200, management.renterCopy(actor, shopId));
+            if (method === 'POST') return json(response, 200, management.renterCopy(actor, shopId, await staffBody(request)));
+          }
           if (resource === 'settings') {
             if (method === 'GET') return json(response, 200, management.settings(actor, shopId));
             if (method === 'POST') return json(response, 200, management.settings(actor, shopId, await staffBody(request)));
@@ -248,7 +262,8 @@ export function createApp({
       const widgetOffer = path.match(/^\/api\/widgets\/([\w-]+)\/offer$/);
       if (method === 'GET' && widgetOffer) {
         const shopId = widgets.selectedShop(widgetOffer[1], url.searchParams.get('shopId'));
-        return json(response, 200, booking.offer(shopId, url.searchParams.get('pickupAt') ?? undefined));
+        const language = url.searchParams.get('language') ?? undefined;
+        return json(response, 200, booking.offer(shopId, url.searchParams.get('pickupAt') ?? undefined, { language }));
       }
       const widgetCheckout = path.match(/^\/api\/widgets\/([\w-]+)\/checkouts$/);
       if (method === 'POST' && widgetCheckout) {
@@ -259,6 +274,7 @@ export function createApp({
       if (method === 'GET' && path === '/api/offer') {
         return json(response, 200, booking.offer(
           url.searchParams.get('shopId') ?? undefined, url.searchParams.get('pickupAt') ?? undefined,
+          { language: url.searchParams.get('language') ?? undefined },
         ));
       }
       if (method === 'POST' && path === '/api/checkouts') return json(response, 201, booking.hold(await body(request)));
@@ -282,7 +298,9 @@ export function createApp({
       if (method === 'GET' && assets.has(path)) return await file(response, ...assets.get(path));
       json(response, 404, { error: 'Nie znaleziono strony.' });
     } catch (error) {
-      if (error instanceof OperationError) return json(response, error.status, { error: error.message });
+      if (error instanceof OperationError) {
+        return json(response, error.status, { error: error.message, ...(error.language === 'en' && { language: 'en' }) });
+      }
       console.error(error);
       json(response, 500, { error: 'Wystąpił błąd. Spróbuj ponownie.' });
     }

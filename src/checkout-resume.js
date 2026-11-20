@@ -15,18 +15,20 @@ function draftFrom(input, bikeCount) {
   return { email, phone, riderHeights, acceptedTerms: input.acceptedTerms === true, termsVersion };
 }
 
-function emailMessage(link) {
+function emailMessage(link, language) {
+  const english = language === 'en';
   const resumeUrl = '/checkout-resume/' + link.token;
   return {
     to: link.recipient,
-    subject: 'Dokończ rezerwację roweru',
-    content: 'Twój prywatny link do formularza jest ważny przez 24 godziny.\n' + resumeUrl,
+    subject: english ? 'Finish your bike booking' : 'Dokończ rezerwację roweru',
+    content: (english ? 'Your private checkout link is valid for 24 hours.'
+      : 'Twój prywatny link do formularza jest ważny przez 24 godziny.') + '\n' + resumeUrl,
     resumeUrl,
     expiresAt: new Date(link.expires_at).toISOString(),
   };
 }
 
-export function openCheckoutResumes(db) {
+export function openCheckoutResumes(db, languageOf) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS checkout_resume_sessions (
       id TEXT PRIMARY KEY REFERENCES checkouts(id),
@@ -52,7 +54,7 @@ export function openCheckoutResumes(db) {
   const updateDraft = db.prepare('UPDATE checkout_resume_sessions SET draft = ? WHERE id = ?');
 
   return {
-    issue(checkoutId, input, bikeCount, time) {
+    issue(checkoutId, input, bikeCount, time, language) {
       const draft = draftFrom(input, bikeCount);
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft.email) || draft.email !== input.email.trim()) {
         throw new OperationError(400, 'Podaj prawidłowy adres e-mail.');
@@ -60,7 +62,7 @@ export function openCheckoutResumes(db) {
       const session = currentSession.get(checkoutId);
       const id = session?.id ?? checkoutId;
       const existing = session && selectMessage.get(id, input.requestId);
-      if (existing) return emailMessage(existing);
+      if (existing) return emailMessage(existing, language);
       const encoded = JSON.stringify(draft);
       if (session) updateDraft.run(encoded, id);
       else createSession.run(id, checkoutId, encoded);
@@ -68,7 +70,7 @@ export function openCheckoutResumes(db) {
         token: randomBytes(32).toString('base64url'), recipient: draft.email, expires_at: time + linkLifetime,
       };
       insertMessage.run(link.token, id, input.requestId, link.recipient, link.expires_at);
-      return emailMessage(link);
+      return emailMessage(link, language);
     },
     save(checkoutId, input, bikeCount) {
       const session = currentSession.get(checkoutId);
@@ -80,7 +82,11 @@ export function openCheckoutResumes(db) {
     read(token, time) {
       const link = tokenPattern.test(token) && selectToken.get(token);
       if (!link) throw missingLink();
-      if (link.expires_at <= time) throw new OperationError(410, 'Link do dokończenia rezerwacji wygasł.');
+      if (link.expires_at <= time) {
+        const error = new OperationError(410, 'Link do dokończenia rezerwacji wygasł.');
+        error.language = languageOf({ id: link.session_id });
+        throw error;
+      }
       return readSession.get(link.session_id);
     },
   };

@@ -10,6 +10,7 @@ export async function request(path, body) {
   if (!response.ok) {
     const error = new Error(data.error);
     error.status = response.status;
+    error.language = data.language;
     throw error;
   }
   return data;
