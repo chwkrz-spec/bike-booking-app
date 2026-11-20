@@ -24,3 +24,5 @@ npm test
 npx playwright install chromium
 npm run test:browser
 ```
+
+Próby operatora uruchamia się osobno po uzyskaniu testowego konta Marketplace Model 2. [Instrukcja sandboxu Przelewy24](docs/p24-marketplace-sandbox.md)
