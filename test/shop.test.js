@@ -39,6 +39,11 @@ test('Właściciel zarządza swoimi punktami i przyznaje uprawnienie do zwrotów
   assert.deepEqual(workerShops.body.map(({ id, canRefund }) => ({ id, canRefund })), [{ id: demoShopId, canRefund: true }]);
   assert.equal((await post(app, memberPath, { shopId: other.body.id, canRefund: true }, worker)).status, 403);
   assert.equal((await app.request(staffRoute(demoShopId, 'stock'), credentials(worker))).body[0].quantity, 1);
+  const helmetStock = { itemId: 'kask', quantity: 1 };
+  assert.equal((await post(app, staffRoute(demoShopId, 'stock'), helmetStock, worker)).status, 200);
+  assert.equal((await post(app, staffRoute(other.body.id, 'stock'), helmetStock, worker)).status, 404);
+  const { body: currentStock } = await app.request(staffRoute(demoShopId, 'stock'), credentials(worker));
+  assert.equal(currentStock.find(({ id }) => id === 'kask').quantity, 1);
 
   const selection = app.selection((await app.request('/api/offer')).body);
   const checkout = (await app.request('/api/checkouts', { method: 'POST', body: selection })).body;

@@ -18,6 +18,7 @@ let activeId = widget.storage.getItem(checkoutKey);
 let pendingRefresh;
 let stopCountdown = () => {};
 let refreshing = false;
+let shownTermsVersion;
 
 function showStep(step) {
   for (const id of steps) get(id).hidden = id !== step;
@@ -120,7 +121,6 @@ async function selection() {
   get('legal-name').textContent = offer.shop.seller.legalName;
   get('seller-address').textContent = offer.shop.seller.address;
   get('seller-nip').textContent = 'NIP ' + offer.shop.seller.nip;
-  get('terms').textContent = offer.shop.terms;
   get('seller').hidden = false;
   buildQuantities();
   get('slot').replaceChildren(...offer.slots.map((slot) => new Option(formatInstant(slot.pickupAt), slot.id)));
@@ -134,6 +134,7 @@ function details() {
     phone: values.get('phone'),
     riderHeights: values.getAll('riderHeight').map(Number),
     acceptedTerms: values.has('acceptedTerms'),
+    termsVersion: shownTermsVersion,
   };
 }
 
@@ -162,7 +163,7 @@ function restoreDraft() {
   const heights = draft.riderHeights ?? [draft.riderHeight];
   get('email').value = draft.email || '';
   get('phone').value = draft.phone || '';
-  get('details').elements.acceptedTerms.checked = Boolean(draft.acceptedTerms);
+  get('details').elements.acceptedTerms.checked = Boolean(draft.acceptedTerms) && draft.termsVersion === shownTermsVersion;
   for (const [index, input] of get('rider-heights').querySelectorAll('input').entries()) {
     input.value = heights[index] || '';
   }
@@ -190,8 +191,11 @@ async function showCheckout(checkout) {
     await selection();
     showStep('selection');
     showError(new Error(message));
-  } else if (checkout.status === 'confirmed') {
+  } else if (['confirmed', 'cancelled'].includes(checkout.status)) {
     const message = await request('/api/checkouts/' + checkout.id + '/confirmation');
+    get('confirmation-heading').textContent = checkout.status === 'cancelled'
+      ? 'Rezerwacja anulowana' : 'Rezerwacja potwierdzona';
+    get('manage-booking').href = message.bookingUrl;
     get('booking-number').textContent = 'Numer rezerwacji ' + message.bookingId;
     get('confirmation-email').textContent = message.to;
     showStep('confirmation');
@@ -202,6 +206,8 @@ async function showCheckout(checkout) {
     pendingRefresh = setInterval(refresh, 1500);
   } else {
     renderHeightFields(checkout.items);
+    get('terms').textContent = checkout.terms;
+    shownTermsVersion = checkout.termsVersion;
     restoreDraft();
     showStep('details');
     stopCountdown = startCountdown(get('hold-deadline'), checkout, refresh);
@@ -302,6 +308,7 @@ get('details').addEventListener('submit', async (event) => {
     await showCheckout(checkout);
   } catch (error) {
     popup?.close();
+    if (error.status === 409) await refresh();
     showError(error);
   } finally {
     button.disabled = false;

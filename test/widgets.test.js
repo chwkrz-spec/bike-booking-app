@@ -61,5 +61,7 @@ test('Widżet pokazuje bieżącą ofertę własnego punktu i nie przyjmuje inneg
   const held = await app.request(path + '/checkouts', { method: 'POST', body: app.selection(before.body) });
   assert.equal(held.status, 201);
   const updated = await app.request(path + '/offer');
-  assert.equal(updated.body.slots.some(({ id }) => id === before.body.slots[0].id), false);
+  const updatedSlot = updated.body.slots.find(({ id }) => id === before.body.slots[0].id);
+  assert.equal(updatedSlot.availableQuantities[before.body.category.id], 0);
+  assert.equal(updatedSlot.availableQuantities['rower-dzieciecy'], 2);
 });

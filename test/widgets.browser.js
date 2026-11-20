@@ -61,7 +61,7 @@ test('Panel udostępnia formularz hostowany, inline i popup ze wspólnym brandin
   const hostedPage = await renter.newPage();
   await hostedPage.goto(hosted);
   await hostedPage.getByRole('heading', { name: 'Zarezerwuj rower' }).waitFor();
-  await hostedPage.getByLabel('Kategoria roweru').waitFor();
+  await hostedPage.getByLabel('Rower turystyczny', { exact: true }).waitFor();
   assert.equal(await hostedPage.getByLabel('Wybierz punkt').isVisible(), false);
 
   const { body: secondShop } = await app.request('/api/staff/shops', {
@@ -84,15 +84,15 @@ test('Panel udostępnia formularz hostowany, inline i popup ze wspólnym brandin
     popupParent.getByRole('button', { name: 'Zarezerwuj rower' }).click(),
   ]);
 
-  async function checkOffers(pages) {
+  async function checkOffers(pages, expectedPrice = /20,00\sPLN/) {
     for (const page of pages) {
       await page.locator('#shop-name').filter({ hasText: shopName }).waitFor();
-      await page.getByLabel('Kategoria roweru').waitFor();
+      await page.getByLabel('Rower turystyczny', { exact: true }).waitFor();
       assert.equal(await page.getByAltText('Logo Partnera').evaluate((image) => image.getAttribute('src')), logo);
       assert.equal(await page.getByRole('button', { name: 'Potwierdź wybór' }).evaluate(
         (button) => getComputedStyle(button).backgroundColor,
       ), 'rgb(23, 65, 101)');
-      assert.match(await page.getByTestId('total').textContent(), /20,00\sPLN/);
+      assert.match(await page.getByTestId('total').textContent(), expectedPrice);
     }
   }
 
@@ -120,8 +120,9 @@ test('Panel udostępnia formularz hostowany, inline i popup ze wspólnym brandin
   await inlinePage.getByRole('button', { name: 'Potwierdź wybór' }).click();
   await inlinePage.getByLabel('Adres e-mail').waitFor();
   await Promise.all([hostedPage.reload(), popupPage.reload()]);
-  await checkOffers([hostedPage, popupPage]);
+  await checkOffers([hostedPage, popupPage], /15,00\sPLN/);
   for (const page of [hostedPage, popupPage]) {
-    assert.notEqual(await page.getByLabel('Termin odbioru').inputValue(), newPickup);
+    assert.equal(await page.getByLabel('Termin odbioru').inputValue(), newPickup);
+    assert.equal(await page.getByLabel('Rower turystyczny').getAttribute('max'), '0');
   }
 });

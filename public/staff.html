@@ -76,6 +76,18 @@
         <button type="submit">Dodaj punkt</button>
       </form>
     </section>
+    <section class="booking-card" id="policy-admin" aria-labelledby="policy-title" hidden>
+      <h2 id="policy-title">Polityka anulowania</h2>
+      <form id="cancellation-policy">
+        <label for="free-cancellation">Granica pełnego zwrotu (minuty przed odbiorem)</label>
+        <input id="free-cancellation" name="freeCancellationMinutes" type="number" min="0" max="527040" required>
+        <label for="late-refund">Późne anulowanie (procent zwrotu)</label>
+        <input id="late-refund" name="lateRefundPercent" type="number" min="0" max="100" required>
+        <label for="no-show-grace">Czas oczekiwania na odbiór (minuty)</label>
+        <input id="no-show-grace" name="noShowGraceMinutes" type="number" min="0" max="527040" required>
+        <button type="submit">Zapisz politykę anulowania</button>
+      </form>
+    </section>
     <section class="booking-card" id="widgets-admin" aria-labelledby="widgets-heading" hidden>
       <h2 id="widgets-heading">Widżety rezerwacji</h2>
       <form id="widget-branding" aria-labelledby="widget-branding-heading">

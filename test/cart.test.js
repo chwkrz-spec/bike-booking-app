@@ -81,6 +81,29 @@ test('Płatność za kilka kategorii wymaga jednego wzrostu na każdy rower', as
   const { body: bookings } = await app.request('/api/staff/bookings', { headers: staffHeaders });
   assert.deepEqual(bookings[0].riderHeights, [176, 110, 127]);
   assert.deepEqual(bookings[0].items, checkout.body.items);
+
+  const confirmation = await app.request('/api/checkouts/' + checkout.body.id + '/confirmation');
+  const privatePath = '/api' + confirmation.body.bookingUrl.replace('/booking/', '/bookings/');
+  const { body: details } = await app.request(privatePath);
+  assert.deepEqual(details.items, checkout.body.items);
+  assert.equal(details.canCancel, true);
+
+  const assignment = [
+    { itemId: bike, units: ['T-01'] },
+    { itemId: childBike, units: ['D-01', 'D-02'] },
+  ];
+  const assignmentPath = '/api/staff/shops/' + shop.id + '/bookings/' + bookings[0].id + '/pickup';
+  assert.equal((await post(app, assignmentPath, { items: assignment }, staffHeaders)).status, 409);
+  app.advance(57);
+  assert.equal((await post(app, assignmentPath, { items: [
+    assignment[0], { itemId: childBike, units: ['D-01', 'd-01'] },
+  ] }, staffHeaders)).status, 400);
+  const assigned = await post(app, assignmentPath, { items: assignment }, staffHeaders);
+  assert.equal(assigned.status, 200);
+  assert.deepEqual(assigned.body.items, assignment);
+  assert.equal((await post(app, privatePath + '/cancel', {})).status, 409);
+  assert.equal((await post(app, '/api/staff/bookings/' + bookings[0].id + '/cancel', {}, staffHeaders)).status, 409);
+
 });
 
 test('Spóźniona płatność za koszyk jest zwracana, gdy kask został zajęty przez innego gościa', async (t) => {

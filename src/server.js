@@ -13,6 +13,7 @@ const assets = new Map([
   ['/assets/widget-context.js', ['widget-context.js', 'text/javascript']],
   ['/assets/widget-popup.js', ['widget-popup.js', 'text/javascript']],
   ['/assets/payment.js', ['payment.js', 'text/javascript']],
+  ['/assets/booking.js', ['booking.js', 'text/javascript']],
   ['/assets/staff.js', ['staff.js', 'text/javascript']],
   ['/assets/staff-equipment.js', ['staff-equipment.js', 'text/javascript']],
   ['/assets/staff-widgets.js', ['staff-widgets.js', 'text/javascript']],
@@ -55,7 +56,7 @@ async function body(request) {
 
 async function staffBody(request) {
   if (request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') {
-    throw new OperationError(415, 'Prześlij ustawienia w formacie JSON.');
+    throw new OperationError(415, 'Prześlij dane w formacie JSON.');
   }
   return body(request);
 }
@@ -88,9 +89,23 @@ export function createApp({
         if (path === '/api/staff/bookings' && method === 'GET') {
           return json(response, 200, booking.staffBookings(actor));
         }
+        const staffBooking = path.match(/^\/api\/staff\/bookings\/([\w-]+)\/(cancel|refunds)$/);
+        if (staffBooking?.[2] === 'cancel' && method === 'POST') {
+          await staffBody(request);
+          return json(response, 200, booking.cancelPartnerBooking(actor, staffBooking[1]));
+        }
+        if (staffBooking?.[2] === 'refunds' && method === 'GET') {
+          return json(response, 200, booking.bookingRefunds(actor, staffBooking[1]));
+        }
         if (path === '/api/staff/shops') {
           if (method === 'GET') return json(response, 200, management.shops(actor));
           if (method === 'POST') return json(response, 201, management.createShop(actor, await staffBody(request)));
+        }
+        if (path === '/api/staff/cancellation-policy') {
+          if (method === 'GET') return json(response, 200, booking.cancellationPolicy(actor));
+          if (method === 'POST') {
+            return json(response, 200, booking.cancellationPolicy(actor, await staffBody(request)));
+          }
         }
         if (path === '/api/staff/partner') {
           if (method === 'GET') return json(response, 200, management.partner(actor));
@@ -129,6 +144,14 @@ export function createApp({
           }
           if (method === 'GET' && resource === 'bookings') return json(response, 200, booking.staffBookings(actor, shopId));
         }
+      }
+
+      const renterBooking = path.match(/^\/api\/bookings\/([\w-]+)(\/cancel)?$/);
+      if (renterBooking && method === 'GET' && !renterBooking[2]) {
+        return json(response, 200, booking.renterBooking(renterBooking[1]));
+      }
+      if (renterBooking && method === 'POST' && renterBooking[2]) {
+        return json(response, 200, booking.cancelRenterBooking(renterBooking[1], await staffBody(request)));
       }
 
       const confirmation = path.match(/^\/api\/checkouts\/([\w-]+)\/confirmation$/);
@@ -171,6 +194,7 @@ export function createApp({
       if (method === 'POST' && path === '/api/checkouts') return json(response, 201, booking.hold(await body(request)));
       if (method === 'GET' && checkout) return json(response, 200, booking.checkout(checkout[1]));
 
+      if (method === 'GET' && /^\/booking\/[\w-]+$/.test(path)) return await file(response, 'booking.html');
       const widgetPage = path.match(/^\/widgets\/([\w-]+)(?:\/(inline|popup))?$/);
       if (method === 'GET' && widgetPage) {
         const [, widgetId, widgetMode = 'hosted'] = widgetPage;

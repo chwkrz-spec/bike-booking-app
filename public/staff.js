@@ -10,6 +10,9 @@ const dayNames = {
 const shopSelect = get('staff-shop');
 const shopForm = get('shop-settings');
 const partnerForm = get('partner-settings');
+const policyForm = get('cancellation-policy');
+const policyPath = '/api/staff/cancellation-policy';
+const bookingStatus = { confirmed: 'Potwierdzona', cancelled: 'Anulowana' };
 const assignmentForm = get('assignment');
 let owner;
 let members = [];
@@ -22,6 +25,7 @@ function cell(row, ...values) {
     line.textContent = value;
     element.append(line);
   }
+  return element;
 }
 
 function displayBookings(bookings) {
@@ -34,9 +38,28 @@ function displayBookings(bookings) {
     cell(row, booking.email, booking.phone);
     cell(row, ...booking.riderHeights.map((height) => height + ' cm'));
     cell(row, formatAmount(booking.total, booking.currency));
-    cell(row, 'Potwierdzona', booking.id);
+    const status = cell(row, bookingStatus[booking.status] ?? booking.status, booking.id);
+    if (booking.cancellationRefund !== undefined) {
+      status.append('Zwrot po anulowaniu: ' + formatAmount(booking.cancellationRefund, booking.currency));
+    }
+    if (booking.canCancel) {
+      const form = document.createElement('form');
+      const button = document.createElement('button');
+      button.type = 'submit';
+      button.className = 'secondary';
+      button.textContent = 'Anuluj rezerwację';
+      form.append(button);
+      status.append(form);
+      saves(form, async () => {
+        const refund = formatAmount(booking.total, booking.currency);
+        if (!window.confirm('Anulować całą rezerwację i zwrócić ' + refund + '?')) return;
+        await request('/api/staff/bookings/' + booking.id + '/cancel', {});
+        await refreshShop();
+        return 'Anulowano rezerwację.';
+      });
+    }
     const pickup = pickupControls(booking, saves, refreshShop);
-    if (pickup) row.cells[row.cells.length - 1].append(pickup);
+    if (pickup) status.append(pickup);
   }
   get('list').hidden = bookings.length === 0;
   get('empty').hidden = bookings.length !== 0;
@@ -159,7 +182,8 @@ function saves(form, callback) {
     get('error').hidden = true;
     get('saved').hidden = true;
     try {
-      showSuccess(await callback());
+      const message = await callback();
+      if (message) showSuccess(message);
     } catch (error) {
       showError(error);
     } finally {
@@ -184,6 +208,11 @@ saves(shopForm, async () => {
 saves(partnerForm, async () => {
   await request('/api/staff/partner', formValues(partnerForm));
   return 'Zapisano dane sprzedawcy.';
+});
+saves(policyForm, async () => {
+  const policy = Object.fromEntries(Object.entries(formValues(policyForm)).map(([name, value]) => [name, Number(value)]));
+  await request(policyPath, policy);
+  return 'Zapisano politykę anulowania.';
 });
 saves(get('create-shop'), async () => {
   const form = get('create-shop');
@@ -217,10 +246,13 @@ assignmentForm.elements.assigned.addEventListener('change', () => {
 try {
   const session = await request('/api/staff/session');
   owner = session.role === 'owner';
-  for (const id of ['owner-schedule', 'partner-admin', 'member-admin']) get(id).hidden = !owner;
+  for (const id of ['owner-schedule', 'partner-admin', 'policy-admin', 'member-admin']) get(id).hidden = !owner;
   await refreshShops();
   if (owner) {
-    const [partner] = await Promise.all([request('/api/staff/partner'), refreshMembers(), setupWidgets(saves)]);
+    const [partner, policy] = await Promise.all([
+      request('/api/staff/partner'), request(policyPath), refreshMembers(), setupWidgets(saves),
+    ]);
+    for (const [field, value] of Object.entries(policy)) policyForm.elements[field].value = value;
     for (const [field, value] of Object.entries(partner)) partnerForm.elements[field].value = value;
   }
 } catch (error) {

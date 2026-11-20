@@ -95,6 +95,7 @@ th, td { padding: 0.65rem; border-bottom: 1px solid #dce5dd; }
 #staff-stock form { grid-template-columns: minmax(0, 1fr) 5rem auto; }
 #staff-stock form button { margin: 0; }
 
+#terms { white-space: pre-line; }
 .branded-widget { background: var(--widget-background); }
 .branded-widget button:not(.secondary) { color: var(--widget-button-text); background: var(--widget-accent); }
 .branded-widget button:not(.secondary):hover { filter: brightness(0.9); }

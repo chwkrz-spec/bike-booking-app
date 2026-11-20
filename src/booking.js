@@ -2,7 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { bookingCalendar } from './booking-calendar.js';
 import { itemTotals, sameItems, selectionItems, stockForPeriod } from './cart.js';
-import { category, shop } from './catalog.js';
+import { openBookingCancellations } from './booking-cancellations.js';
+import { openCancellationPolicies } from './cancellation-policy.js';
+import { openRefunds } from './refunds.js';
+import { category } from './catalog.js';
 import { OperationError } from './operation-error.js';
 import { createPaymentSimulator } from './payment-simulator.js';
 import { openShopManagement } from './shop-management.js';
@@ -38,7 +41,7 @@ function savedItems(row) {
   }];
 }
 
-function describeCheckout(row, now, payment) {
+function checkoutSummary(row, now, payment) {
   return {
     id: row.id,
     status: row.deadline <= now && ['held', 'payment'].includes(row.status) ? 'expired' : row.status,
@@ -112,10 +115,19 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
       subject TEXT NOT NULL,
       content TEXT NOT NULL
     ) STRICT;
-    CREATE INDEX IF NOT EXISTS checkout_stock ON checkouts(shop_id, category_id, pickup_at, return_at);
+    CREATE INDEX IF NOT EXISTS checkout_shop_period ON checkouts(shop_id, return_at);
   `);
   const management = openShopManagement(db, { staffPassword, demoOwners });
-  const simulator = createPaymentSimulator(db);
+  const refunds = openRefunds(db);
+  const simulator = createPaymentSimulator(db, refunds);
+  const policies = openCancellationPolicies(db, management);
+
+  function describeCheckout(row, time, payment) {
+    const summary = checkoutSummary(row, time, payment);
+    if (summary.status !== 'held') return summary;
+    const { terms, termsVersion } = policies.quote(row.shop_id);
+    return { ...summary, terms, termsVersion };
+  }
   const selectBooking = db.prepare('SELECT * FROM bookings WHERE payment_id = ?');
   const insertBooking = db.prepare('INSERT INTO bookings VALUES (?, ?, ?, ?)');
   const insertMessage = db.prepare('INSERT INTO confirmation_messages VALUES (?, ?, ?, ?)');
@@ -131,7 +143,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     WHERE p.checkout_id = ?
   `);
   const bookingRows = `
-    SELECT b.id AS booking_id, c.*, cart.items, cart.rider_heights,
+    SELECT b.id AS booking_id, b.payment_id, c.*, cart.items, cart.rider_heights,
       assignment.assigned_by, assignment.assigned_at, assignment.items AS assigned_items
     FROM bookings b JOIN checkouts c ON c.id = b.checkout_id
     LEFT JOIN checkout_carts cart ON cart.checkout_id = c.id
@@ -140,6 +152,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
   const listBookings = db.prepare(bookingRows + ' WHERE c.shop_id = ? ORDER BY c.pickup_at, b.id');
   const selectStaffBooking = db.prepare(bookingRows + ' WHERE c.shop_id = ? AND b.id = ?');
   const recordAssignment = db.prepare('INSERT INTO pickup_assignments VALUES (?, ?, ?, ?)');
+  const assignmentExists = db.prepare('SELECT 1 FROM pickup_assignments WHERE booking_id = ?');
   const confirmCheckout = db.prepare("UPDATE checkouts SET status = 'confirmed' WHERE id = ?");
   const refundCheckout = db.prepare("UPDATE checkouts SET status = 'refund_started' WHERE id = ?");
   const verifyPayment = db.prepare("UPDATE payments SET status = 'verified' WHERE id = ?");
@@ -166,6 +179,11 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
   `);
   const insertCart = db.prepare('INSERT INTO checkout_carts (checkout_id, items) VALUES (?, ?)');
   const recordHeights = db.prepare('UPDATE checkout_carts SET rider_heights = ? WHERE checkout_id = ?');
+  const cancellations = openBookingCancellations(db, {
+    policies, refunds, simulator, management, now,
+    itemsForBooking: (row) => savedItems(selectCheckout.get(row.id)),
+    canCancelBooking: (row) => row.status === 'confirmed' && !assignmentExists.get(row.booking_id),
+  });
 
   function availability(shopId, inventory, timestamp, bufferMinutes = 0) {
     const commitments = occupied.all(shopId, timestamp - bufferMinutes * 60_000, timestamp).map((row) => ({
@@ -210,6 +228,11 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
 
   return {
     management,
+    cancellationPolicy: (actor, input) => transaction(() => policies.settings(actor, input)),
+    renterBooking: cancellations.renterView,
+    cancelRenterBooking: (token, input) => transaction(() => cancellations.renterCancel(token, input)),
+    cancelPartnerBooking: (actor, id) => transaction(() => cancellations.partnerCancel(actor, id)),
+    bookingRefunds: cancellations.staffRefunds,
     widgets: openWidgets(db),
     offer(shopId, pickupAt) {
       const time = now();
@@ -238,8 +261,9 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
           slots.push(slot);
         }
       }
+      const { terms, termsVersion } = policies.quote(selectedShop.id);
       return {
-        shop: selectedShop,
+        shop: { ...selectedShop, terms, termsVersion },
         category: { id: category.id, name: category.name },
         equipment: inventory,
         currency: 'PLN',
@@ -298,15 +322,16 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         const time = now();
         const current = checkout(id);
         const payment = checkoutPayment.get(id);
-        if (['confirmed', 'refund_started'].includes(current.status)) return describeCheckout(current, time, payment);
+        if (['confirmed', 'cancelled', 'refund_started'].includes(current.status)) return describeCheckout(current, time, payment);
         if (current.deadline <= time) throw new OperationError(409, 'Blokada wygasła. Wybierz termin ponownie.');
         if (payment) return describeCheckout(current, time, payment);
 
         const bikeCount = savedItems(current).reduce((count, item) => count + (item.kind === 'bike' ? item.quantity : 0), 0);
         const { email, phone, riderHeights } = renterDetails(input, bikeCount);
+        const terms = policies.accept(current, input.termsVersion);
         const paymentId = randomUUID();
         insertPayment.run(paymentId, id);
-        startPayment.run(time + holdDuration, email, phone, riderHeights[0], management.publicShop(current.shop_id).shop.terms, time, id);
+        startPayment.run(time + holdDuration, email, phone, riderHeights[0], terms, time, id);
         recordHeights.run(JSON.stringify(riderHeights), id);
         return describeCheckout(checkout(id), time, { id: paymentId });
       });
@@ -339,7 +364,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         const payment = simulator.get(id);
         const current = checkout(payment.checkout_id);
         const existing = selectBooking.get(id);
-        if (existing) return { status: 'confirmed', bookingId: existing.id };
+        if (existing) return { status: current.status, bookingId: existing.id };
         if (current.status === 'refund_started') return { status: current.status, refundId: simulator.refund(id).id };
 
         const time = now();
@@ -365,14 +390,19 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         insertBooking.run(bookingId, current.id, id, time);
         verifyPayment.run(id);
         confirmCheckout.run(current.id);
-        insertMessage.run(bookingId, current.email, 'Potwierdzenie rezerwacji', 'Potwierdziliśmy rezerwację ' + bookingId + '.');
+        const bookingUrl = cancellations.privateUrl(bookingId);
+        insertMessage.run(bookingId, current.email, 'Potwierdzenie rezerwacji',
+          'Potwierdziliśmy rezerwację ' + bookingId + '.\nSzczegóły i anulowanie rezerwacji: ' + bookingUrl);
         return { status: 'confirmed', bookingId };
       });
     },
     confirmation(id) {
       const message = selectMessage.get(id);
       if (!message) throw new OperationError(404, 'Brak potwierdzenia rezerwacji.');
-      return message;
+      const bookingUrl = cancellations.privateUrl(message.bookingId);
+      const content = message.content.includes(bookingUrl) ? message.content
+        : message.content + '\nSzczegóły i anulowanie rezerwacji: ' + bookingUrl;
+      return { ...message, bookingUrl, content };
     },
     paymentFailure(id) {
       const message = selectFailureMessage.get(id);
@@ -421,6 +451,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
           ...describeCheckout(row, now()),
           id: row.booking_id,
           categoryName: savedItems(row).find(({ kind }) => kind === 'bike').name,
+          ...cancellations.staffSummary(actor, row),
           email: row.email,
           phone: row.phone,
           riderHeight: row.rider_height,
