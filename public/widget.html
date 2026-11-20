@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zarezerwuj rower</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script type="module" src="/assets/widget.js"></script>
+</head>
+<body>
+  <main class="booking-layout">
+    <section class="booking-card" aria-labelledby="page-title">
+      <p class="shop-name" id="shop-name"></p>
+      <h1 id="page-title">Zarezerwuj rower</h1>
+      <p id="error" class="error" role="alert" hidden></p>
+      <p id="loading" role="status">Sprawdzamy dostępne terminy…</p>
+      <form id="selection" hidden>
+        <label for="category">Kategoria roweru</label>
+        <select id="category" name="category" required></select>
+        <label for="slot">Termin odbioru i zwrotu</label>
+        <select id="slot" name="slot" required></select>
+        <p id="no-slots" hidden>Brak dostępnych terminów.</p>
+        <p class="hint">Godziny w czasie polskim</p>
+        <div class="total-line"><span>Do zapłaty</span><strong data-testid="total" id="selection-total"></strong></div>
+        <button type="submit">Potwierdź wybór</button>
+      </form>
+      <div id="checkout-summary" hidden>
+        <p id="selected-slot"></p>
+        <div class="total-line"><span>Do zapłaty</span><strong id="checkout-total"></strong></div>
+      </div>
+      <form id="details" hidden>
+        <p class="deadline">Rower zarezerwowany przez <time id="hold-deadline"></time></p>
+        <label for="email">Adres e-mail</label>
+        <input id="email" name="email" type="email" autocomplete="email" maxlength="254" required>
+        <label for="phone">Numer telefonu</label>
+        <input id="phone" name="phone" type="tel" autocomplete="tel" maxlength="30" required>
+        <label for="height">Wzrost uczestnika (cm)</label>
+        <input id="height" name="riderHeight" type="number" min="50" max="250" step="1" required>
+        <details>
+          <summary>Warunki najmu</summary>
+          <p id="terms"></p>
+        </details>
+        <label class="checkbox"><input name="acceptedTerms" type="checkbox" required> Akceptuję warunki najmu</label>
+        <button type="submit">Zapłać</button>
+        <p class="hint">Symulator płatności otworzy się w osobnym oknie.</p>
+      </form>
+      <section id="payment-pending" aria-labelledby="payment-heading" hidden>
+        <h2 id="payment-heading">Płatność w toku</h2>
+        <p class="deadline">Czas na płatność <time id="widget-payment-deadline"></time></p>
+        <a class="button secondary" id="reopen-payment" target="_blank" rel="noopener">Otwórz symulator płatności</a>
+      </section>
+      <section id="confirmation" aria-labelledby="confirmation-heading" hidden>
+        <h2 id="confirmation-heading">Rezerwacja potwierdzona</h2>
+        <p id="booking-number"></p>
+        <p>Adres potwierdzenia w symulatorze <strong id="confirmation-email"></strong></p>
+        <button id="new-booking" class="secondary" type="button">Zarezerwuj kolejny rower</button>
+      </section>
+    </section>
+    <aside class="seller-card" aria-labelledby="seller-title" id="seller" hidden>
+      <h2 id="seller-title">Sprzedawca</h2>
+      <strong id="legal-name"></strong>
+      <p id="seller-address"></p>
+      <p id="seller-nip"></p>
+    </aside>
+  </main>
+</body>
+</html>
