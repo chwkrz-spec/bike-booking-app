@@ -145,6 +145,10 @@ export function createApp({
         if (assisted?.[2] === 'payment-links' && method === 'POST') {
           return json(response, 201, booking.sendStaffPaymentLink(actor, assisted[1], await staffBody(request)));
         }
+        const shopCopy = path.match(/^\/api\/staff\/shops\/([\w-]+)\/copy-configuration$/);
+        if (shopCopy && method === 'POST') {
+          return json(response, 200, management.copyConfiguration(actor, shopCopy[1], await staffBody(request)));
+        }
         const shopRoute = path.match(/^\/api\/staff\/shops\/([\w-]+)\/(settings|stock|catalog|bookings)$/);
         if (shopRoute) {
           const [, shopId, resource] = shopRoute;
