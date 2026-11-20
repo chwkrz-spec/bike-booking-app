@@ -32,7 +32,7 @@ function renterDetails(input) {
 function describeCheckout(row, now, payment) {
   return {
     id: row.id,
-    status: row.deadline <= now && row.status !== 'confirmed' ? 'expired' : row.status,
+    status: row.deadline <= now && ['held', 'payment'].includes(row.status) ? 'expired' : row.status,
     shopId: row.shop_id,
     categoryId: row.category_id,
     pickupAt: new Date(row.pickup_at).toISOString(),
@@ -85,6 +85,12 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
       subject TEXT NOT NULL,
       content TEXT NOT NULL
     ) STRICT;
+    CREATE TABLE IF NOT EXISTS payment_failure_messages (
+      payment_id TEXT PRIMARY KEY REFERENCES payments(id),
+      recipient TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      content TEXT NOT NULL
+    ) STRICT;
     CREATE INDEX IF NOT EXISTS checkout_stock ON checkouts(shop_id, category_id, pickup_at, return_at);
   `);
   const management = openShopManagement(db, { staffPassword, demoOwners });
@@ -97,11 +103,18 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     FROM bookings b JOIN confirmation_messages m ON m.booking_id = b.id
     WHERE b.checkout_id = ?
   `);
+  const insertFailureMessage = db.prepare('INSERT INTO payment_failure_messages VALUES (?, ?, ?, ?)');
+  const selectFailureMessage = db.prepare(`
+    SELECT m.recipient AS 'to', m.subject, m.content
+    FROM payments p JOIN payment_failure_messages m ON m.payment_id = p.id
+    WHERE p.checkout_id = ?
+  `);
   const listBookings = db.prepare(`
     SELECT b.id AS booking_id, c.* FROM bookings b JOIN checkouts c ON c.id = b.checkout_id
     WHERE c.shop_id = ? ORDER BY c.pickup_at, b.id
   `);
   const confirmCheckout = db.prepare("UPDATE checkouts SET status = 'confirmed' WHERE id = ?");
+  const refundCheckout = db.prepare("UPDATE checkouts SET status = 'refund_started' WHERE id = ?");
   const verifyPayment = db.prepare("UPDATE payments SET status = 'verified' WHERE id = ?");
   const selectRetry = db.prepare('SELECT * FROM checkouts WHERE request_id = ?');
   const checkoutPayment = db.prepare('SELECT * FROM payments WHERE checkout_id = ?');
@@ -222,7 +235,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         const time = now();
         const current = checkout(id);
         const payment = checkoutPayment.get(id);
-        if (current.status === 'confirmed') return describeCheckout(current, time, payment);
+        if (['confirmed', 'refund_started'].includes(current.status)) return describeCheckout(current, time, payment);
         if (current.deadline <= time) throw new OperationError(409, 'Blokada wygasła. Wybierz termin ponownie.');
         if (payment) return describeCheckout(current, time, payment);
 
@@ -237,16 +250,21 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
       const payment = simulator.get(id);
       const current = checkout(payment.checkout_id);
       const time = now();
+      const refund = simulator.refund(id);
       return {
         status: describeCheckout(current, time).status,
         total: current.total,
         currency: 'PLN',
         expiresAt: new Date(current.deadline).toISOString(),
         serverTime: new Date(time).toISOString(),
+        ...(refund && { refund }),
       };
     },
     simulatePayment(id, input) {
       return transaction(() => simulator.pay(id, now(), input));
+    },
+    simulateRefund(id) {
+      return transaction(() => simulator.startFullRefund(id, now()));
     },
     reconcilePayment(id) {
       if (typeof id !== 'string' || !uuid.test(id)) {
@@ -257,10 +275,20 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         const current = checkout(payment.checkout_id);
         const existing = selectBooking.get(id);
         if (existing) return { status: 'confirmed', bookingId: existing.id };
+        if (current.status === 'refund_started') return { status: current.status, refundId: simulator.refund(id).id };
 
         const time = now();
-        if (current.deadline <= time) return { status: 'expired' };
-        if (!simulator.verify(id)) return { status: 'payment' };
+        const expired = current.deadline <= time;
+        if (!simulator.verify(id)) return { status: expired ? 'expired' : 'payment' };
+        const startedRefund = simulator.refund(id);
+        const originalSlot = { pickupAt: current.pickup_at, returnAt: current.return_at };
+        if (startedRefund || (expired && (originalSlot.pickupAt <= time || !available(originalSlot, time, current.shop_id)))) {
+          const refund = startedRefund ?? simulator.startFullRefund(id, time);
+          refundCheckout.run(current.id);
+          insertFailureMessage.run(id, current.email, 'Zwrot płatności za rezerwację',
+            'Nie możemy zrealizować Twojej rezerwacji. Zleciliśmy pełny zwrot płatności.');
+          return { status: 'refund_started', refundId: refund.id };
+        }
 
         const bookingId = randomUUID();
         insertBooking.run(bookingId, current.id, id, time);
@@ -273,6 +301,11 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     confirmation(id) {
       const message = selectMessage.get(id);
       if (!message) throw new OperationError(404, 'Brak potwierdzenia rezerwacji.');
+      return message;
+    },
+    paymentFailure(id) {
+      const message = selectFailureMessage.get(id);
+      if (!message) throw new OperationError(404, 'Brak informacji o zwrocie płatności.');
       return message;
     },
     staffBookings(actor, shopId) {

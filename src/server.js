@@ -53,7 +53,13 @@ async function staffBody(request) {
   return body(request);
 }
 
-export function createApp({ databasePath = ':memory:', now = Date.now, staffPassword, demoOwners = [] } = {}) {
+export function createApp({
+  databasePath = ':memory:',
+  now = Date.now,
+  staffPassword,
+  demoOwners = [],
+  allowSimulatedRefunds = false,
+} = {}) {
   const booking = openBooking({ databasePath, now, staffPassword, demoOwners });
   const management = booking.management;
 
@@ -105,10 +111,16 @@ export function createApp({ databasePath = ':memory:', now = Date.now, staffPass
 
       const confirmation = path.match(/^\/api\/checkouts\/([\w-]+)\/confirmation$/);
       if (method === 'GET' && confirmation) return json(response, 200, booking.confirmation(confirmation[1]));
+      const paymentFailure = path.match(/^\/api\/checkouts\/([\w-]+)\/payment-failure$/);
+      if (method === 'GET' && paymentFailure) return json(response, 200, booking.paymentFailure(paymentFailure[1]));
       const simulated = path.match(/^\/api\/simulator\/payments\/([\w-]+)(\/pay)?$/);
       if (simulated && method === 'GET' && !simulated[2]) return json(response, 200, booking.paymentSession(simulated[1]));
       if (simulated && method === 'POST' && simulated[2]) {
         return json(response, 200, booking.simulatePayment(simulated[1], await body(request)));
+      }
+      const simulatedRefund = path.match(/^\/api\/simulator\/payments\/([\w-]+)\/refund$/);
+      if (allowSimulatedRefunds && method === 'POST' && simulatedRefund) {
+        return json(response, 200, booking.simulateRefund(simulatedRefund[1]));
       }
       if (method === 'POST' && path === '/api/payment-notifications') {
         return json(response, 200, booking.reconcilePayment((await body(request)).paymentId));

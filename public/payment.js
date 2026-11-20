@@ -14,7 +14,11 @@ function showStatus(checkout) {
       load().catch(showError);
     });
   } else {
-    get('payment-status').textContent = checkout.status === 'confirmed' ? 'Płatność zweryfikowana' : 'Okno płatności wygasło.';
+    const messages = {
+      confirmed: 'Płatność zweryfikowana',
+      refund_started: 'Nie możemy zrealizować Twojej rezerwacji. Zleciliśmy pełny zwrot płatności.',
+    };
+    get('payment-status').textContent = messages[checkout.status] ?? 'Okno płatności wygasło.';
     get('back').hidden = false;
   }
 }
