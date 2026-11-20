@@ -20,11 +20,32 @@ const dateTime = new Intl.DateTimeFormat('pl-PL', {
   dateStyle: 'short',
   timeStyle: 'short',
 });
+const date = new Intl.DateTimeFormat('pl-PL', { timeZone: 'Europe/Warsaw', dateStyle: 'short' });
 const time = new Intl.DateTimeFormat('pl-PL', { timeZone: 'Europe/Warsaw', timeStyle: 'short' });
+const offset = new Intl.DateTimeFormat('pl-PL', { timeZone: 'Europe/Warsaw', timeZoneName: 'shortOffset' });
 const money = new Intl.NumberFormat('pl-PL', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+function ambiguous(value) {
+  const milliseconds = value.getTime();
+  const formatted = dateTime.format(value);
+  return [milliseconds - 3_600_000, milliseconds + 3_600_000].some((at) => dateTime.format(at) === formatted);
+}
+
+function formatWithOffset(value, base) {
+  const formatted = base.format(value);
+  if (!ambiguous(value)) return formatted;
+  const zone = offset.formatToParts(value).find(({ type }) => type === 'timeZoneName').value;
+  return formatted + ' (' + zone + ')';
+}
+
 export const formatAmount = (amount, currency) => money.format(amount / 100) + '\u00a0' + currency;
-export const formatSlot = ({ pickupAt, returnAt }) => dateTime.format(new Date(pickupAt)) + '–' + time.format(new Date(returnAt));
+export const formatInstant = (value) => formatWithOffset(new Date(value), dateTime);
+export function formatSlot({ pickupAt, returnAt }) {
+  const start = new Date(pickupAt);
+  const end = new Date(returnAt);
+  const endDisplay = date.format(start) === date.format(end) ? time : dateTime;
+  return formatWithOffset(start, dateTime) + '–' + formatWithOffset(end, endDisplay);
+}
 
 export function startCountdown(element, checkout, onExpire) {
   element.dateTime = checkout.expiresAt;

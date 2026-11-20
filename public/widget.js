@@ -1,11 +1,16 @@
-import { formatAmount, formatSlot, get, request, showError, startCountdown } from './common.js';
+import { formatAmount, formatInstant, formatSlot, get, request, showError, startCountdown } from './common.js';
 
-const checkoutKey = 'bike-checkout';
-const attemptKey = 'bike-selection-attempt';
-const draftKey = 'bike-checkout-draft';
+const shopId = new URLSearchParams(window.location.search).get('shopId');
+const scope = shopId ? ':' + shopId : '';
+const checkoutKey = 'bike-checkout' + scope;
+const attemptKey = 'bike-selection-attempt' + scope;
+const draftKey = 'bike-checkout-draft' + scope;
 const steps = ['selection', 'details', 'payment-pending', 'confirmation'];
 
 let offer;
+let returns = [];
+let returnRequest = 0;
+const confirmButton = get('selection').querySelector('button');
 let activeId = sessionStorage.getItem(checkoutKey);
 let pendingRefresh;
 let stopCountdown = () => {};
@@ -18,7 +23,7 @@ function showStep(step) {
 }
 
 function currentSlot() {
-  return offer.slots.find(({ id }) => id === get('slot').value);
+  return returns.find(({ returnAt }) => returnAt === get('return').value);
 }
 
 function showPrice() {
@@ -26,8 +31,41 @@ function showPrice() {
   get('selection-total').textContent = slot ? formatAmount(slot.total, offer.currency) : '—';
 }
 
+function offerPath(pickupAt) {
+  const params = new URLSearchParams();
+  if (shopId) params.set('shopId', shopId);
+  if (pickupAt) params.set('pickupAt', pickupAt);
+  return '/api/offer?' + params;
+}
+
+async function loadReturns() {
+  const attempt = ++returnRequest;
+  const pickupAt = get('slot').value;
+  confirmButton.disabled = true;
+  get('return').disabled = true;
+  returns = [];
+  get('return').replaceChildren();
+  showPrice();
+  try {
+    if (pickupAt) {
+      const result = await request(offerPath(pickupAt));
+      if (attempt !== returnRequest) return;
+      returns = result.slots;
+    }
+    get('return').replaceChildren(...returns.map((slot) => new Option(formatInstant(slot.returnAt), slot.returnAt)));
+    const preferred = offer.slots.find(({ id }) => id === pickupAt)?.returnAt;
+    if (returns.some(({ returnAt }) => returnAt === preferred)) get('return').value = preferred;
+    get('return').disabled = returns.length === 0;
+    confirmButton.disabled = returns.length === 0;
+    get('no-slots').hidden = returns.length > 0;
+    showPrice();
+  } catch (error) {
+    if (attempt === returnRequest) showError(error);
+  }
+}
+
 async function selection() {
-  offer = await request('/api/offer');
+  offer = await request(offerPath());
   get('shop-name').textContent = offer.shop.name;
   get('legal-name').textContent = offer.shop.seller.legalName;
   get('seller-address').textContent = offer.shop.seller.address;
@@ -35,10 +73,8 @@ async function selection() {
   get('terms').textContent = offer.shop.terms;
   get('seller').hidden = false;
   get('category').replaceChildren(new Option(offer.category.name, offer.category.id));
-  get('slot').replaceChildren(...offer.slots.map((slot) => new Option(formatSlot(slot), slot.id)));
-  get('selection').querySelector('button').disabled = offer.slots.length === 0;
-  get('no-slots').hidden = offer.slots.length > 0;
-  showPrice();
+  get('slot').replaceChildren(...offer.slots.map((slot) => new Option(formatInstant(slot.pickupAt), slot.id)));
+  await loadReturns();
 }
 
 function details() {
@@ -126,7 +162,8 @@ async function confirmSelection(attempt) {
   }
 }
 
-get('slot').addEventListener('change', showPrice);
+get('slot').addEventListener('change', loadReturns);
+get('return').addEventListener('change', showPrice);
 
 get('selection').addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -135,17 +172,18 @@ get('selection').addEventListener('submit', async (event) => {
   get('error').hidden = true;
   try {
     const slotId = get('slot').value;
+    const returnAt = get('return').value;
     const categoryId = get('category').value;
     let attempt = savedAttempt();
-    if (attempt?.slotId !== slotId || attempt.categoryId !== categoryId) {
-      attempt = { requestId: crypto.randomUUID(), slotId, shopId: offer.shop.id, categoryId };
+    if (attempt?.slotId !== slotId || attempt.categoryId !== categoryId || attempt.returnAt !== returnAt) {
+      attempt = { requestId: crypto.randomUUID(), slotId, returnAt, shopId: offer.shop.id, categoryId };
       sessionStorage.setItem(attemptKey, JSON.stringify(attempt));
     }
     await confirmSelection(attempt);
   } catch (error) {
     showError(error);
   } finally {
-    button.disabled = offer.slots.length === 0;
+    button.disabled = returns.length === 0;
   }
 });
 

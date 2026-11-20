@@ -13,7 +13,7 @@ test('Gość kończy rezerwację w osobnym oknie symulatora, a obsługa widzi po
   await page.getByText('Rowerowy Punkt Testowy sp. z o.o.', { exact: true }).waitFor();
   await page.getByText('ul. Przykładowa 1, 00-001 Warszawa', { exact: true }).waitFor();
   await page.getByText('NIP 0000000000', { exact: true }).waitFor();
-  const slot = page.getByLabel('Termin odbioru i zwrotu');
+  const slot = page.getByLabel('Termin odbioru');
   await slot.locator('option').first().waitFor({ state: 'attached' });
   await slot.selectOption({ index: 0 });
   assert.match(await page.getByTestId('total').textContent(), /20,00\sPLN/);
@@ -63,7 +63,7 @@ test('Odświeżenie po przerwanym połączeniu odzyskuje ten sam termin rozpocz�
   t.after(() => browser.close());
   const page = await browser.newPage({ locale: 'pl-PL' });
   await page.goto(app.origin);
-  await page.getByLabel('Termin odbioru i zwrotu').waitFor();
+  await page.getByLabel('Termin odbioru').waitFor();
 
   let firstDeadline;
   await page.route('**/api/checkouts', async (route) => {

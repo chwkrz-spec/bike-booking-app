@@ -1,15 +1,17 @@
 # Pilotaż rezerwacji rowerów
 
-Wersja pokazowa udostępnia widżet dla jednego syntetycznego punktu, jedną kategorię roweru i godzinne terminy w polskim czasie lokalnym. Przedpłatę i potwierdzenie e-mail obsługuje lokalny symulator. Po zweryfikowaniu przedpłaty widżet pokazuje numer rezerwacji i adres odbiorcy zapisanej wiadomości.
+Wersja pokazowa udostępnia widżet dla syntetycznych punktów, jedną kategorię roweru oraz odbiór i zwrot co pół godziny w polskim czasie lokalnym. Przedpłatę i potwierdzenie e-mail obsługuje lokalny symulator. Po zweryfikowaniu przedpłaty widżet pokazuje numer rezerwacji i adres odbiorcy zapisanej wiadomości.
 
 ## Uruchomienie
 
-Wymagany jest Node.js 24. Po uruchomieniu aplikacja podaje adres widżetu, adres panelu obsługi oraz losowe hasło użytkownika `obsluga`. Możesz ustawić własne hasło pokazowe przez `DEMO_STAFF_PASSWORD`. Aplikacja nasłuchuje na adresie `127.0.0.1` i domyślnie zapisuje dane w `booking.sqlite`.
+Wymagany jest Node.js 24. Po uruchomieniu aplikacja podaje adres widżetu, adres panelu obsługi oraz losowe hasło pokazowego właściciela `obsluga`. Możesz ustawić własne hasło pokazowe przez `DEMO_STAFF_PASSWORD`. Aplikacja nasłuchuje na adresie `127.0.0.1` i domyślnie zapisuje dane w `booking.sqlite`.
 
 ```sh
 npm ci
 npm start
 ```
+
+W panelu właściciel może dodawać punkty, ustawiać kalendarz i limity, tworzyć loginy pracowników oraz przypisywać ich do punktów z uprawnieniem do zatwierdzania zwrotów. Pracownik loguje się tym samym adresem panelu. Widżet bez parametru otwiera początkowy punkt, a `/?shopId=<id-punktu>` pokazuje ofertę wskazanego punktu. Horyzont dotyczy terminu odbioru, a długość najmu liczy się w czasie rzeczywistym.
 
 ## Testy
 

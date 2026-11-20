@@ -12,6 +12,10 @@
     <section class="booking-card" aria-labelledby="page-title">
       <h1 id="page-title">Rezerwacje punktu</h1>
       <p id="error" class="error" role="alert" hidden></p>
+      <p id="saved" role="status" hidden></p>
+      <label for="staff-shop" id="staff-shop-label" hidden>Punkt</label>
+      <select id="staff-shop" hidden></select>
+      <p id="no-shops" hidden>Brak przypisanych punktów.</p>
       <p id="empty" hidden>Brak potwierdzonych rezerwacji.</p>
       <div class="table-container" id="list" hidden>
         <table>
@@ -28,6 +32,66 @@
           <tbody id="reservations"></tbody>
         </table>
       </div>
+    </section>
+    <section class="booking-card" id="shop-admin" aria-labelledby="shop-settings-title" hidden>
+      <h2 id="shop-settings-title">Ustawienia punktu</h2>
+      <p>Dostępna pula online</p>
+      <ul id="staff-stock"></ul>
+      <form id="shop-settings">
+        <label for="minimum-notice">Minimalne wyprzedzenie (minuty)</label>
+        <input id="minimum-notice" name="minimumNoticeMinutes" type="number" min="0" required>
+        <div id="owner-schedule" hidden>
+          <label for="booking-horizon">Horyzont rezerwacji (minuty)</label>
+          <input id="booking-horizon" name="bookingHorizonMinutes" type="number" min="30" required>
+          <label for="max-rental">Maksymalny czas najmu (minuty)</label>
+          <input id="max-rental" name="maxRentalMinutes" type="number" min="30" required>
+          <fieldset>
+            <legend>Godziny otwarcia</legend>
+            <p class="hint">Wpisz przedziały w polskim czasie, np. 09:00–12:00, 13:00–17:30. Puste pole oznacza dzień zamknięty.</p>
+            <div id="opening-hours"></div>
+          </fieldset>
+          <label for="holiday-hours">Wyjątki według daty</label>
+          <textarea id="holiday-hours" rows="3" aria-describedby="holiday-hint"></textarea>
+          <p id="holiday-hint" class="hint">Jeden wyjątek w wierszu, np. 2027-01-01 10:00–14:00. Sama data oznacza dzień zamknięty.</p>
+        </div>
+        <button type="submit">Zapisz ustawienia punktu</button>
+      </form>
+    </section>
+    <section class="booking-card" id="partner-admin" aria-labelledby="partner-title" hidden>
+      <h2 id="partner-title">Partner</h2>
+      <form id="partner-settings">
+        <label for="partner-name">Nazwa prawna sprzedawcy</label>
+        <input id="partner-name" name="legalName" required maxlength="180">
+        <label for="partner-address">Adres sprzedawcy</label>
+        <input id="partner-address" name="address" required maxlength="180">
+        <label for="partner-nip">NIP</label>
+        <input id="partner-nip" name="nip" required pattern="[0-9]{10}" inputmode="numeric">
+        <button type="submit">Zapisz dane sprzedawcy</button>
+      </form>
+      <form id="create-shop">
+        <label for="new-shop-name">Nazwa nowego punktu</label>
+        <input id="new-shop-name" name="name" required maxlength="120">
+        <button type="submit">Dodaj punkt</button>
+      </form>
+    </section>
+    <section class="booking-card" id="member-admin" aria-labelledby="member-title" hidden>
+      <h2 id="member-title">Pracownicy</h2>
+      <form id="create-member">
+        <label for="member-login">Login pracownika</label>
+        <input id="member-login" name="username" required minlength="3" maxlength="50" autocomplete="off">
+        <label for="member-password">Hasło początkowe</label>
+        <input id="member-password" name="password" required minlength="12" maxlength="128" autocomplete="new-password" type="password">
+        <button type="submit">Dodaj pracownika</button>
+      </form>
+      <form id="assignment" hidden>
+        <label for="assignment-member">Pracownik</label>
+        <select id="assignment-member" name="username" required></select>
+        <label for="assignment-shop">Przypisany punkt</label>
+        <select id="assignment-shop" name="shopId" required></select>
+        <label class="checkbox"><input name="assigned" type="checkbox"> Przypisz do punktu</label>
+        <label class="checkbox"><input name="canRefund" type="checkbox"> Może zatwierdzać zwroty</label>
+        <button type="submit">Zapisz uprawnienia</button>
+      </form>
     </section>
   </main>
 </body>

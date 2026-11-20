@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
@@ -46,27 +46,61 @@ async function body(request) {
   throw new OperationError(400, 'Nieprawidłowy formularz.');
 }
 
-function credentials(value) {
-  return createHash('sha256').update(value).digest();
+async function staffBody(request) {
+  if (request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') {
+    throw new OperationError(415, 'Prześlij ustawienia w formacie JSON.');
+  }
+  return body(request);
 }
 
-export function createApp({ databasePath = ':memory:', now = Date.now, staffPassword } = {}) {
-  const booking = openBooking({ databasePath, now });
-  const staffCredential = staffPassword && credentials('Basic ' + Buffer.from('obsluga:' + staffPassword).toString('base64'));
+export function createApp({ databasePath = ':memory:', now = Date.now, staffPassword, demoOwners = [] } = {}) {
+  const booking = openBooking({ databasePath, now, staffPassword, demoOwners });
+  const management = booking.management;
 
   const server = createServer(async (request, response) => {
     try {
-      const path = new URL(request.url, 'http://localhost').pathname;
+      const url = new URL(request.url, 'http://localhost');
+      const path = url.pathname;
       const method = request.method;
       const checkout = path.match(/^\/api\/checkouts\/([\w-]+)$/);
 
-      if (path === '/api/staff/bookings' || path === '/staff') {
-        if (!staffCredential || !timingSafeEqual(staffCredential, credentials(request.headers.authorization ?? ''))) {
+      if (path === '/staff' || path.startsWith('/api/staff/')) {
+        const actor = management.authenticate(request.headers.authorization);
+        if (!actor) {
           response.setHeader('WWW-Authenticate', 'Basic realm="Panel pokazowy"');
           return json(response, 401, { error: 'Wymagane logowanie obsługi.' });
         }
         if (method === 'GET' && path === '/staff') return await file(response, 'staff.html');
-        if (method === 'GET') return json(response, 200, booking.staffBookings());
+        if (path === '/api/staff/session' && method === 'GET') return json(response, 200, { role: actor.role });
+        if (path === '/api/staff/bookings' && method === 'GET') {
+          return json(response, 200, booking.staffBookings(actor));
+        }
+        if (path === '/api/staff/shops') {
+          if (method === 'GET') return json(response, 200, management.shops(actor));
+          if (method === 'POST') return json(response, 201, management.createShop(actor, await staffBody(request)));
+        }
+        if (path === '/api/staff/partner') {
+          if (method === 'GET') return json(response, 200, management.partner(actor));
+          if (method === 'POST') return json(response, 200, management.partner(actor, await staffBody(request)));
+        }
+        if (path === '/api/staff/members') {
+          if (method === 'GET') return json(response, 200, management.members(actor));
+          if (method === 'POST') return json(response, 201, management.createMember(actor, await staffBody(request)));
+        }
+        const assignment = path.match(/^\/api\/staff\/members\/([\w-]+)\/assignments$/);
+        if (assignment && method === 'POST') {
+          return json(response, 200, management.assignment(actor, assignment[1], await staffBody(request)));
+        }
+        const shopRoute = path.match(/^\/api\/staff\/shops\/([\w-]+)\/(settings|stock|bookings)$/);
+        if (shopRoute) {
+          const [, shopId, resource] = shopRoute;
+          if (resource === 'settings') {
+            if (method === 'GET') return json(response, 200, management.settings(actor, shopId));
+            if (method === 'POST') return json(response, 200, management.settings(actor, shopId, await staffBody(request)));
+          }
+          if (method === 'GET' && resource === 'stock') return json(response, 200, management.stock(actor, shopId));
+          if (method === 'GET' && resource === 'bookings') return json(response, 200, booking.staffBookings(actor, shopId));
+        }
       }
 
       const confirmation = path.match(/^\/api\/checkouts\/([\w-]+)\/confirmation$/);
@@ -82,7 +116,11 @@ export function createApp({ databasePath = ':memory:', now = Date.now, staffPass
 
       const payment = path.match(/^\/api\/checkouts\/([\w-]+)\/payment$/);
       if (method === 'POST' && payment) return json(response, 200, booking.startPayment(payment[1], await body(request)));
-      if (method === 'GET' && path === '/api/offer') return json(response, 200, booking.offer());
+      if (method === 'GET' && path === '/api/offer') {
+        return json(response, 200, booking.offer(
+          url.searchParams.get('shopId') ?? undefined, url.searchParams.get('pickupAt') ?? undefined,
+        ));
+      }
       if (method === 'POST' && path === '/api/checkouts') return json(response, 201, booking.hold(await body(request)));
       if (method === 'GET' && checkout) return json(response, 200, booking.checkout(checkout[1]));
 

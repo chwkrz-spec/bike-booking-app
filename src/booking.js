@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { category, rentalSlots, shop } from './catalog.js';
+import { bookingCalendar, provisionalHourlyTotal } from './booking-calendar.js';
+import { category, shop } from './catalog.js';
 import { OperationError } from './operation-error.js';
 import { createPaymentSimulator } from './payment-simulator.js';
+import { openShopManagement } from './shop-management.js';
 
 const holdDuration = 15 * 60 * 1000;
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -43,7 +45,7 @@ function describeCheckout(row, now, payment) {
   };
 }
 
-export function openBooking({ databasePath, now }) {
+export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
   const db = new DatabaseSync(databasePath);
   db.exec(`
     PRAGMA busy_timeout = 5000;
@@ -85,6 +87,7 @@ export function openBooking({ databasePath, now }) {
     ) STRICT;
     CREATE INDEX IF NOT EXISTS checkout_stock ON checkouts(shop_id, category_id, pickup_at, return_at);
   `);
+  const management = openShopManagement(db, { staffPassword, demoOwners });
   const simulator = createPaymentSimulator(db);
   const selectBooking = db.prepare('SELECT * FROM bookings WHERE payment_id = ?');
   const insertBooking = db.prepare('INSERT INTO bookings VALUES (?, ?, ?, ?)');
@@ -96,7 +99,7 @@ export function openBooking({ databasePath, now }) {
   `);
   const listBookings = db.prepare(`
     SELECT b.id AS booking_id, c.* FROM bookings b JOIN checkouts c ON c.id = b.checkout_id
-    ORDER BY c.pickup_at, b.id
+    WHERE c.shop_id = ? ORDER BY c.pickup_at, b.id
   `);
   const confirmCheckout = db.prepare("UPDATE checkouts SET status = 'confirmed' WHERE id = ?");
   const verifyPayment = db.prepare("UPDATE payments SET status = 'verified' WHERE id = ?");
@@ -118,8 +121,18 @@ export function openBooking({ databasePath, now }) {
     VALUES (?, ?, ?, ?, ?, ?, ?, 'held', ?)
   `);
 
-  function available(slot, timestamp) {
-    return occupied.get(shop.id, category.id, slot.returnAt, slot.pickupAt, timestamp).quantity < category.stock;
+  function available(slot, timestamp, shopId = shop.id) {
+    return occupied.get(shopId, category.id, slot.returnAt, slot.pickupAt, timestamp).quantity < category.stock;
+  }
+
+  function firstAvailableReturns(calendar, pickupAt, timestamp, shopId, limit = Infinity) {
+    const slots = [];
+    for (const slot of calendar.returnsFor(pickupAt)) {
+      if (!available(slot, timestamp, shopId)) break;
+      slots.push(slot);
+      if (slots.length === limit) break;
+    }
+    return slots;
   }
 
   function checkout(id) {
@@ -141,20 +154,38 @@ export function openBooking({ databasePath, now }) {
   }
 
   return {
-    offer() {
+    management,
+    offer(shopId, pickupAt) {
       const time = now();
+      const { shop: selectedShop, settings } = management.publicShop(shopId);
+      const calendar = bookingCalendar(settings, time);
+      const slots = [];
+      if (pickupAt === undefined) {
+        for (const pickup of calendar.pickups()) {
+          const preview = calendar.preview(pickup);
+          if (preview && available(preview, time, selectedShop.id)) {
+            slots.push(preview);
+          } else if (preview) {
+            const [shortest] = firstAvailableReturns(calendar, preview.id, time, selectedShop.id, 1);
+            if (shortest) slots.push(shortest);
+          }
+        }
+      } else {
+        slots.push(...firstAvailableReturns(calendar, pickupAt, time, selectedShop.id));
+      }
       return {
-        shop,
+        shop: selectedShop,
         category: { id: category.id, name: category.name },
         currency: 'PLN',
-        slots: rentalSlots(time).filter((slot) => available(slot, time)).map((slot) => ({
+        slots: slots.map((slot) => ({
           ...slot,
           pickupAt: new Date(slot.pickupAt).toISOString(),
           returnAt: new Date(slot.returnAt).toISOString(),
+          total: provisionalHourlyTotal(slot, category.hourlyRate),
         })),
       };
     },
-    hold({ shopId, categoryId, slotId, requestId }) {
+    hold({ shopId, categoryId, slotId, returnAt, requestId }) {
       if (requestId !== undefined && (typeof requestId !== 'string' || !uuid.test(requestId))) {
         throw new OperationError(400, 'Nieprawidłowy identyfikator próby.');
       }
@@ -162,20 +193,24 @@ export function openBooking({ databasePath, now }) {
         const time = now();
         const retry = requestId && selectRetry.get(requestId);
         if (retry) {
-          if (retry.shop_id !== shopId || retry.category_id !== categoryId || new Date(retry.pickup_at).toISOString() !== slotId) {
+          if (retry.shop_id !== shopId || retry.category_id !== categoryId ||
+              new Date(retry.pickup_at).toISOString() !== slotId ||
+              (returnAt !== undefined && new Date(retry.return_at).toISOString() !== returnAt)) {
             throw new OperationError(409, 'Ta próba dotyczy innego wyboru.');
           }
           return describeCheckout(retry, time, checkoutPayment.get(retry.id));
         }
-        const slot = rentalSlots(time).find(({ id }) => id === slotId);
-        if (shopId !== shop.id || categoryId !== category.id || !slot) {
+        if (typeof shopId !== 'string' || categoryId !== category.id) {
           throw new OperationError(400, 'Wybierz termin i rower z aktualnej oferty.');
         }
-        if (!available(slot, time)) {
+        const { settings } = management.publicShop(shopId);
+        const slot = bookingCalendar(settings, time).selection(slotId, returnAt);
+        if (!slot) throw new OperationError(400, 'Wybierz termin i rower z aktualnej oferty.');
+        if (!available(slot, time, shopId)) {
           throw new OperationError(409, 'Rower jest już zajęty w tym terminie.');
         }
         const id = randomUUID();
-        insertCheckout.run(id, requestId ?? null, shop.id, category.id, slot.pickupAt, slot.returnAt, slot.total, time + holdDuration);
+        insertCheckout.run(id, requestId ?? null, shopId, category.id, slot.pickupAt, slot.returnAt, provisionalHourlyTotal(slot, category.hourlyRate), time + holdDuration);
         return describeCheckout(checkout(id), time);
       });
     },
@@ -194,7 +229,7 @@ export function openBooking({ databasePath, now }) {
         const { email, phone, riderHeight } = renterDetails(input);
         const paymentId = randomUUID();
         insertPayment.run(paymentId, id);
-        startPayment.run(time + holdDuration, email, phone, riderHeight, shop.terms, time, id);
+        startPayment.run(time + holdDuration, email, phone, riderHeight, management.publicShop(current.shop_id).shop.terms, time, id);
         return describeCheckout(checkout(id), time, { id: paymentId });
       });
     },
@@ -240,15 +275,19 @@ export function openBooking({ databasePath, now }) {
       if (!message) throw new OperationError(404, 'Brak potwierdzenia rezerwacji.');
       return message;
     },
-    staffBookings() {
-      return listBookings.all().map((row) => ({
-        ...describeCheckout(row, now()),
-        id: row.booking_id,
-        categoryName: category.name,
-        email: row.email,
-        phone: row.phone,
-        riderHeight: row.rider_height,
-      }));
+    staffBookings(actor, shopId) {
+      const ids = shopId === undefined ? management.shops(actor).map(({ id }) => id) : [shopId];
+      if (shopId !== undefined) management.accessible(actor, shopId);
+      return ids.flatMap((id) => listBookings.all(id))
+        .sort((left, right) => left.pickup_at - right.pickup_at || left.booking_id.localeCompare(right.booking_id))
+        .map((row) => ({
+          ...describeCheckout(row, now()),
+          id: row.booking_id,
+          categoryName: category.name,
+          email: row.email,
+          phone: row.phone,
+          riderHeight: row.rider_height,
+        }));
     },
     close() {
       db.close();
