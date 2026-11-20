@@ -15,6 +15,7 @@ let activeId = sessionStorage.getItem(checkoutKey);
 let pendingRefresh;
 let stopCountdown = () => {};
 let refreshing = false;
+let shownTermsVersion;
 
 function showStep(step) {
   for (const id of steps) get(id).hidden = id !== step;
@@ -70,7 +71,6 @@ async function selection() {
   get('legal-name').textContent = offer.shop.seller.legalName;
   get('seller-address').textContent = offer.shop.seller.address;
   get('seller-nip').textContent = 'NIP ' + offer.shop.seller.nip;
-  get('terms').textContent = offer.shop.terms;
   get('seller').hidden = false;
   get('category').replaceChildren(new Option(offer.category.name, offer.category.id));
   get('slot').replaceChildren(...offer.slots.map((slot) => new Option(formatInstant(slot.pickupAt), slot.id)));
@@ -84,13 +84,14 @@ function details() {
     phone: values.get('phone'),
     riderHeight: Number(values.get('riderHeight')),
     acceptedTerms: values.has('acceptedTerms'),
+    termsVersion: shownTermsVersion,
   };
 }
 
 function restoreDraft() {
   const draft = JSON.parse(sessionStorage.getItem(draftKey) ?? '{}');
   for (const input of get('details').querySelectorAll('input')) {
-    if (input.type === 'checkbox') input.checked = Boolean(draft[input.name]);
+    if (input.type === 'checkbox') input.checked = Boolean(draft[input.name]) && draft.termsVersion === shownTermsVersion;
     else input.value = draft[input.name] || '';
   }
 }
@@ -116,8 +117,11 @@ async function showCheckout(checkout) {
     await selection();
     showStep('selection');
     showError(new Error(message));
-  } else if (checkout.status === 'confirmed') {
+  } else if (['confirmed', 'cancelled'].includes(checkout.status)) {
     const message = await request('/api/checkouts/' + checkout.id + '/confirmation');
+    get('confirmation-heading').textContent = checkout.status === 'cancelled'
+      ? 'Rezerwacja anulowana' : 'Rezerwacja potwierdzona';
+    get('manage-booking').href = message.bookingUrl;
     get('booking-number').textContent = 'Numer rezerwacji ' + message.bookingId;
     get('confirmation-email').textContent = message.to;
     showStep('confirmation');
@@ -127,6 +131,8 @@ async function showCheckout(checkout) {
     stopCountdown = startCountdown(get('widget-payment-deadline'), checkout, refresh);
     pendingRefresh = setInterval(refresh, 1500);
   } else {
+    get('terms').textContent = checkout.terms;
+    shownTermsVersion = checkout.termsVersion;
     restoreDraft();
     showStep('details');
     stopCountdown = startCountdown(get('hold-deadline'), checkout, refresh);
@@ -208,6 +214,7 @@ get('details').addEventListener('submit', async (event) => {
     await showCheckout(checkout);
   } catch (error) {
     popup?.close();
+    if (error.status === 409) await refresh();
     showError(error);
   } finally {
     button.disabled = false;

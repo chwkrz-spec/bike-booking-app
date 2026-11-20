@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { openBookingCancellations } from './booking-cancellations.js';
+import { openCancellationPolicies } from './cancellation-policy.js';
+import { openRefunds } from './refunds.js';
 import { bookingCalendar, provisionalHourlyTotal } from './booking-calendar.js';
 import { category, shop } from './catalog.js';
 import { OperationError } from './operation-error.js';
@@ -29,7 +32,7 @@ function renterDetails(input) {
   return { email, phone, riderHeight };
 }
 
-function describeCheckout(row, now, payment) {
+function checkoutSummary(row, now, payment) {
   return {
     id: row.id,
     status: row.deadline <= now && ['held', 'payment'].includes(row.status) ? 'expired' : row.status,
@@ -94,7 +97,17 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     CREATE INDEX IF NOT EXISTS checkout_stock ON checkouts(shop_id, category_id, pickup_at, return_at);
   `);
   const management = openShopManagement(db, { staffPassword, demoOwners });
-  const simulator = createPaymentSimulator(db);
+  const refunds = openRefunds(db);
+  const simulator = createPaymentSimulator(db, refunds);
+  const policies = openCancellationPolicies(db, management);
+  const cancellations = openBookingCancellations(db, { policies, refunds, simulator, management, now });
+
+  function describeCheckout(row, time, payment) {
+    const summary = checkoutSummary(row, time, payment);
+    if (summary.status !== 'held') return summary;
+    const { terms, termsVersion } = policies.quote(row.shop_id);
+    return { ...summary, terms, termsVersion };
+  }
   const selectBooking = db.prepare('SELECT * FROM bookings WHERE payment_id = ?');
   const insertBooking = db.prepare('INSERT INTO bookings VALUES (?, ?, ?, ?)');
   const insertMessage = db.prepare('INSERT INTO confirmation_messages VALUES (?, ?, ?, ?)');
@@ -110,7 +123,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     WHERE p.checkout_id = ?
   `);
   const listBookings = db.prepare(`
-    SELECT b.id AS booking_id, c.* FROM bookings b JOIN checkouts c ON c.id = b.checkout_id
+    SELECT b.id AS booking_id, b.payment_id, c.* FROM bookings b JOIN checkouts c ON c.id = b.checkout_id
     WHERE c.shop_id = ? ORDER BY c.pickup_at, b.id
   `);
   const confirmCheckout = db.prepare("UPDATE checkouts SET status = 'confirmed' WHERE id = ?");
@@ -168,6 +181,11 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
 
   return {
     management,
+    cancellationPolicy: (actor, input) => transaction(() => policies.settings(actor, input)),
+    renterBooking: cancellations.renterView,
+    cancelRenterBooking: (token, input) => transaction(() => cancellations.renterCancel(token, input)),
+    cancelPartnerBooking: (actor, id) => transaction(() => cancellations.partnerCancel(actor, id)),
+    bookingRefunds: cancellations.staffRefunds,
     offer(shopId, pickupAt) {
       const time = now();
       const { shop: selectedShop, settings } = management.publicShop(shopId);
@@ -186,8 +204,9 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
       } else {
         slots.push(...firstAvailableReturns(calendar, pickupAt, time, selectedShop.id));
       }
+      const { terms, termsVersion } = policies.quote(selectedShop.id);
       return {
-        shop: selectedShop,
+        shop: { ...selectedShop, terms, termsVersion },
         category: { id: category.id, name: category.name },
         currency: 'PLN',
         slots: slots.map((slot) => ({
@@ -235,14 +254,15 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         const time = now();
         const current = checkout(id);
         const payment = checkoutPayment.get(id);
-        if (['confirmed', 'refund_started'].includes(current.status)) return describeCheckout(current, time, payment);
+        if (['confirmed', 'cancelled', 'refund_started'].includes(current.status)) return describeCheckout(current, time, payment);
         if (current.deadline <= time) throw new OperationError(409, 'Blokada wygasła. Wybierz termin ponownie.');
         if (payment) return describeCheckout(current, time, payment);
 
         const { email, phone, riderHeight } = renterDetails(input);
+        const terms = policies.accept(current, input.termsVersion);
         const paymentId = randomUUID();
         insertPayment.run(paymentId, id);
-        startPayment.run(time + holdDuration, email, phone, riderHeight, management.publicShop(current.shop_id).shop.terms, time, id);
+        startPayment.run(time + holdDuration, email, phone, riderHeight, terms, time, id);
         return describeCheckout(checkout(id), time, { id: paymentId });
       });
     },
@@ -274,7 +294,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         const payment = simulator.get(id);
         const current = checkout(payment.checkout_id);
         const existing = selectBooking.get(id);
-        if (existing) return { status: 'confirmed', bookingId: existing.id };
+        if (existing) return { status: current.status, bookingId: existing.id };
         if (current.status === 'refund_started') return { status: current.status, refundId: simulator.refund(id).id };
 
         const time = now();
@@ -294,14 +314,19 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         insertBooking.run(bookingId, current.id, id, time);
         verifyPayment.run(id);
         confirmCheckout.run(current.id);
-        insertMessage.run(bookingId, current.email, 'Potwierdzenie rezerwacji', 'Potwierdziliśmy rezerwację ' + bookingId + '.');
+        const bookingUrl = cancellations.privateUrl(bookingId);
+        insertMessage.run(bookingId, current.email, 'Potwierdzenie rezerwacji',
+          'Potwierdziliśmy rezerwację ' + bookingId + '.\nSzczegóły i anulowanie rezerwacji: ' + bookingUrl);
         return { status: 'confirmed', bookingId };
       });
     },
     confirmation(id) {
       const message = selectMessage.get(id);
       if (!message) throw new OperationError(404, 'Brak potwierdzenia rezerwacji.');
-      return message;
+      const bookingUrl = cancellations.privateUrl(message.bookingId);
+      const content = message.content.includes(bookingUrl) ? message.content
+        : message.content + '\nSzczegóły i anulowanie rezerwacji: ' + bookingUrl;
+      return { ...message, bookingUrl, content };
     },
     paymentFailure(id) {
       const message = selectFailureMessage.get(id);
@@ -317,6 +342,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
           ...describeCheckout(row, now()),
           id: row.booking_id,
           categoryName: category.name,
+          ...cancellations.staffSummary(actor, row),
           email: row.email,
           phone: row.phone,
           riderHeight: row.rider_height,

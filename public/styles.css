@@ -83,3 +83,5 @@ th, td { padding: 0.65rem; border-bottom: 1px solid #dce5dd; }
 @media (max-width: 44rem) {
   .booking-layout { grid-template-columns: 1fr; }
 }
+
+#terms { white-space: pre-line; }

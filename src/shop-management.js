@@ -186,6 +186,7 @@ export function openShopManagement(db, { staffPassword, demoOwners = [] }) {
       return {
         shop: { id: row.id, name: row.name, seller: JSON.parse(row.seller), terms: row.terms },
         settings: JSON.parse(row.settings),
+        partnerId: row.partner_id,
       };
     },
     accessible,

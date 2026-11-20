@@ -16,6 +16,7 @@ function showStatus(checkout) {
   } else {
     const messages = {
       confirmed: 'Płatność zweryfikowana',
+      cancelled: 'Rezerwacja anulowana.',
       refund_started: 'Nie możemy zrealizować Twojej rezerwacji. Zleciliśmy pełny zwrot płatności.',
     };
     get('payment-status').textContent = messages[checkout.status] ?? 'Okno płatności wygasło.';
