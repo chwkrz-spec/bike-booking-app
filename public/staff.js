@@ -1,5 +1,7 @@
 import { formatAmount, formatSlot, get, request, showError } from './common.js';
 
+import { setupWidgets, showWidgetShops } from './staff-widgets.js';
+
 const dayNames = {
   mon: 'Poniedziałek', tue: 'Wtorek', wed: 'Środa', thu: 'Czwartek',
   fri: 'Piątek', sat: 'Sobota', sun: 'Niedziela',
@@ -142,6 +144,7 @@ async function refreshShops(selected = shopSelect.value) {
   shopSelect.hidden = get('staff-shop-label').hidden = shops.length === 0;
   get('no-shops').hidden = shops.length > 0;
   if (owner) {
+    showWidgetShops(shops);
     assignmentForm.hidden = members.length === 0 || shops.length === 0;
     assignmentState();
   }
@@ -216,7 +219,7 @@ try {
   for (const id of ['owner-schedule', 'partner-admin', 'member-admin']) get(id).hidden = !owner;
   await refreshShops();
   if (owner) {
-    const [partner] = await Promise.all([request('/api/staff/partner'), refreshMembers()]);
+    const [partner] = await Promise.all([request('/api/staff/partner'), refreshMembers(), setupWidgets(saves)]);
     for (const [field, value] of Object.entries(partner)) partnerForm.elements[field].value = value;
   }
 } catch (error) {

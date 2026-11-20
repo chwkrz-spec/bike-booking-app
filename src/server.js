@@ -10,18 +10,24 @@ const assets = new Map([
   ['/assets/styles.css', ['styles.css', 'text/css']],
   ['/assets/common.js', ['common.js', 'text/javascript']],
   ['/assets/widget.js', ['widget.js', 'text/javascript']],
+  ['/assets/widget-context.js', ['widget-context.js', 'text/javascript']],
+  ['/assets/widget-popup.js', ['widget-popup.js', 'text/javascript']],
   ['/assets/payment.js', ['payment.js', 'text/javascript']],
   ['/assets/staff.js', ['staff.js', 'text/javascript']],
+  ['/assets/staff-widgets.js', ['staff-widgets.js', 'text/javascript']],
 ]);
 
-async function file(response, name, type = 'text/html') {
+async function file(response, name, type = 'text/html', { widgetMode } = {}) {
   const content = await readFile(new URL('../public/' + name, import.meta.url));
+  let policy = "default-src 'self'; object-src 'none'; base-uri 'none'";
+  if (widgetMode) policy += "; img-src 'self' https:";
+  if (widgetMode && widgetMode !== 'inline') policy += "; frame-ancestors 'none'";
   response.writeHead(200, {
     'Content-Type': type + '; charset=utf-8',
     'Cache-Control': 'no-store',
     'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff',
-    'Content-Security-Policy': "default-src 'self'; object-src 'none'; base-uri 'none'",
+    'Content-Security-Policy': policy,
   });
   response.end(content);
 }
@@ -61,7 +67,7 @@ export function createApp({
   allowSimulatedRefunds = false,
 } = {}) {
   const booking = openBooking({ databasePath, now, staffPassword, demoOwners });
-  const management = booking.management;
+  const { management, widgets } = booking;
 
   const server = createServer(async (request, response) => {
     try {
@@ -88,6 +94,14 @@ export function createApp({
         if (path === '/api/staff/partner') {
           if (method === 'GET') return json(response, 200, management.partner(actor));
           if (method === 'POST') return json(response, 200, management.partner(actor, await staffBody(request)));
+        }
+        if (path === '/api/staff/widget-branding') {
+          if (method === 'GET') return json(response, 200, widgets.branding(actor));
+          if (method === 'POST') return json(response, 200, widgets.branding(actor, await staffBody(request)));
+        }
+        if (path === '/api/staff/widgets') {
+          if (method === 'GET') return json(response, 200, widgets.list(actor));
+          if (method === 'POST') return json(response, 201, widgets.create(actor, await staffBody(request)));
         }
         if (path === '/api/staff/members') {
           if (method === 'GET') return json(response, 200, management.members(actor));
@@ -128,6 +142,19 @@ export function createApp({
 
       const payment = path.match(/^\/api\/checkouts\/([\w-]+)\/payment$/);
       if (method === 'POST' && payment) return json(response, 200, booking.startPayment(payment[1], await body(request)));
+      const widgetConfig = path.match(/^\/api\/widgets\/([\w-]+)$/);
+      if (method === 'GET' && widgetConfig) return json(response, 200, widgets.configuration(widgetConfig[1]));
+      const widgetOffer = path.match(/^\/api\/widgets\/([\w-]+)\/offer$/);
+      if (method === 'GET' && widgetOffer) {
+        const shopId = widgets.selectedShop(widgetOffer[1], url.searchParams.get('shopId'));
+        return json(response, 200, booking.offer(shopId, url.searchParams.get('pickupAt') ?? undefined));
+      }
+      const widgetCheckout = path.match(/^\/api\/widgets\/([\w-]+)\/checkouts$/);
+      if (method === 'POST' && widgetCheckout) {
+        const selection = await body(request);
+        const shopId = widgets.selectedShop(widgetCheckout[1], selection.shopId);
+        return json(response, 201, booking.hold({ ...selection, shopId }));
+      }
       if (method === 'GET' && path === '/api/offer') {
         return json(response, 200, booking.offer(
           url.searchParams.get('shopId') ?? undefined, url.searchParams.get('pickupAt') ?? undefined,
@@ -136,6 +163,12 @@ export function createApp({
       if (method === 'POST' && path === '/api/checkouts') return json(response, 201, booking.hold(await body(request)));
       if (method === 'GET' && checkout) return json(response, 200, booking.checkout(checkout[1]));
 
+      const widgetPage = path.match(/^\/widgets\/([\w-]+)(?:\/(inline|popup))?$/);
+      if (method === 'GET' && widgetPage) {
+        const [, widgetId, widgetMode = 'hosted'] = widgetPage;
+        widgets.published(widgetId, widgetMode);
+        return await file(response, 'widget.html', 'text/html', { widgetMode });
+      }
       if (method === 'GET' && path === '/') return await file(response, 'widget.html');
       if (method === 'GET' && /^\/payment-simulator\/[\w-]+$/.test(path)) return await file(response, 'payment.html');
       if (method === 'GET' && assets.has(path)) return await file(response, ...assets.get(path));
