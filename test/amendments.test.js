@@ -98,6 +98,11 @@ test('Zmiana rozlicza część opłaty po 24 godzinach i pokazuje odrzucony zwro
   const { body: [updated] } = await app.request(shop + '/bookings', { headers: owner });
   assert.equal(updated.amendments[0].refund.status, 'failed');
   assert.deepEqual(updated.allocatedItems.map(({ itemId }) => itemId), [child]);
+  assert.equal(updated.partnerCancellationRefund, updated.total);
+  const cancellation = await post(app, '/api/staff/bookings/' + booking.bookingId + '/cancel', {}, owner);
+  assert.equal(cancellation.body.cancellationRefund, updated.total);
+  const { body: history } = await app.request(historyPath(booking.bookingId), { headers: owner });
+  assert.deepEqual(history.map(({ status, amount }) => [status, amount]), [['failed', 500], ['completed', updated.total]]);
 });
 
 test('Tylko obsługa z uprawnieniem do zwrotów w punkcie zatwierdza zmianę przy odbiorze', async (t) => {

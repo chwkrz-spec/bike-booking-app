@@ -53,7 +53,7 @@ function displayBookings(bookings, stock) {
       form.append(button);
       status.append(form);
       saves(form, async () => {
-        const refund = formatAmount(booking.total, booking.currency);
+        const refund = formatAmount(booking.partnerCancellationRefund, booking.currency);
         if (!window.confirm('Anulować całą rezerwację i zwrócić ' + refund + '?')) return;
         await request('/api/staff/bookings/' + booking.id + '/cancel', {});
         await refreshShop();

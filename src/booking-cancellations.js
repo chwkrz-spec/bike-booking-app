@@ -123,9 +123,11 @@ export function openBookingCancellations(db, {
     },
     staffSummary(actor, booking, time) {
       const { canRefund } = management.accessible(actor, booking.shop_id);
+      const canCancel = canRefund && canCancelBooking(booking);
       const refund = booking.status === 'cancelled' && refunds.getByKey(booking.payment_id, 'whole-booking-cancellation');
       return {
-        canCancel: canRefund && canCancelBooking(booking),
+        canCancel,
+        ...(canCancel && { partnerCancellationRefund: refunds.remaining(booking.payment_id, booking.total) }),
         canMarkNoShow: canMarkNoShow(booking, time),
         ...(['cancelled', 'no_show'].includes(booking.status) && { cancellationRefund: refund?.amount ?? 0 }),
       };

@@ -58,9 +58,13 @@ export function openRefunds(db) {
   const saveResolution = db.prepare('INSERT INTO refund_resolutions VALUES (?, ?, ?)');
   const save = db.prepare('INSERT INTO refund_requests VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
 
+  function activeRefunds(paymentId) {
+    return list.all(paymentId).filter(({ effective_status }) => effective_status !== 'failed');
+  }
+
   return {
     remaining(paymentId, total) {
-      return total - list.all(paymentId).reduce((sum, entry) => sum + entry.amount, 0);
+      return total - activeRefunds(paymentId).reduce((sum, entry) => sum + entry.amount, 0);
     },
     resolve(id, status, time) {
       if (!['completed', 'failed'].includes(status)) throw new OperationError(400, 'Nieprawidłowy wynik zwrotu.');
@@ -83,7 +87,7 @@ export function openRefunds(db) {
       const previous = find.get(payment.id, key);
       if (previous) return describe(previous);
 
-      const active = list.all(payment.id);
+      const active = activeRefunds(payment.id);
       const previousAmount = active.reduce((sum, entry) => sum + entry.amount, 0);
       const previousDebit = active.reduce((sum, entry) => sum + entry.platform_debit, 0);
       if (!Number.isSafeInteger(amount) || amount <= 0 || amount + previousAmount > payment.total) {
