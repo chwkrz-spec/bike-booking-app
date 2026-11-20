@@ -1,0 +1,41 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { chromium } from 'playwright';
+import { startTestApp } from './support.js';
+
+test('Obsługa wysyła link, a gość potwierdza rezerwację w tym samym oknie czasowym', async (t) => {
+  const app = await startTestApp(t);
+  const browser = await chromium.launch();
+  t.after(() => browser.close());
+  const staff = await browser.newPage({ httpCredentials: { username: 'obsluga', password: 'showcase-credentials' } });
+  staff.setDefaultTimeout(5000);
+  await staff.goto(app.origin + '/staff');
+  const form = staff.getByRole('region', { name: 'Rezerwacja przygotowana przez obsługę' });
+  await form.getByLabel('Termin odbioru').selectOption('2027-01-15T14:00:00.000Z');
+  await form.getByLabel('Termin zwrotu').selectOption('2027-01-15T15:30:00.000Z');
+  await form.getByLabel('Rower turystyczny').fill('1');
+  await form.getByText('40,00 PLN').waitFor();
+  await form.getByLabel('Adres e-mail klienta').fill('obsluga@example.test');
+  await form.getByRole('button', { name: 'Wyślij link do płatności' }).click();
+
+  const link = form.getByRole('link', { name: 'Otwórz prywatny link' });
+  await link.waitFor();
+  const renter = await browser.newPage();
+  renter.setDefaultTimeout(5000);
+  app.advance(8);
+  await renter.goto(app.origin + await link.getAttribute('href'));
+  await renter.getByText('Rower turystyczny × 1').waitFor();
+  await renter.getByText('Sprzedawca', { exact: true }).waitFor();
+  assert.equal(await renter.locator('#hold-deadline').getAttribute('datetime'), '2027-01-15T13:18:00.000Z');
+  await renter.getByLabel('Wzrost 1. uczestnika').fill('178');
+  await renter.getByLabel('Akceptuję warunki najmu').check();
+  await renter.getByRole('button', { name: 'Zapłać', exact: true }).click();
+  await renter.getByRole('button', { name: 'Zasymuluj płatność' }).waitFor();
+  assert.equal(await renter.locator('#payment-deadline').getAttribute('datetime'), '2027-01-15T13:18:00.000Z');
+  await renter.getByRole('button', { name: 'Zasymuluj płatność' }).click();
+  await renter.getByRole('link', { name: 'Wróć do rezerwacji' }).click();
+  await renter.getByText('Rezerwacja potwierdzona.').waitFor();
+  await renter.getByRole('link', { name: 'Zobacz rezerwację' }).waitFor();
+  await staff.getByRole('button', { name: 'Odśwież rezerwacje' }).click();
+  await staff.getByRole('cell').filter({ hasText: '178 cm' }).waitFor();
+});

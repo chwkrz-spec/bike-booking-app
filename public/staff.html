@@ -34,6 +34,30 @@
         </table>
       </div>
     </section>
+    <section class="booking-card" id="assisted-booking" aria-labelledby="assisted-title" hidden>
+      <h2 id="assisted-title">Rezerwacja przygotowana przez obsługę</h2>
+      <p id="staff-no-slots" hidden>Brak dostępnych terminów.</p>
+      <form id="staff-payment-link">
+        <label for="staff-pickup">Termin odbioru</label>
+        <select id="staff-pickup" required></select>
+        <label for="staff-return">Termin zwrotu</label>
+        <select id="staff-return" required></select>
+        <fieldset>
+          <legend>Sprzęt</legend>
+          <div id="staff-quantities" class="equipment-quantities"></div>
+        </fieldset>
+        <label for="staff-renter-email">Adres e-mail klienta</label>
+        <input type="email" id="staff-renter-email" autocomplete="off" required maxlength="254">
+        <div class="total-line"><span>Razem</span><strong id="staff-selection-total">—</strong></div>
+        <button type="submit" disabled>Wyślij link do płatności</button>
+      </form>
+      <details id="staff-message" hidden open>
+        <summary>Wysłana wiadomość w symulatorze</summary>
+        <p id="staff-message-recipient"></p>
+        <p id="staff-message-content" class="rental-terms"></p>
+        <a id="staff-message-link">Otwórz prywatny link</a>
+      </details>
+    </section>
     <section class="booking-card" id="shop-admin" aria-labelledby="shop-settings-title" hidden>
       <h2 id="shop-settings-title">Ustawienia punktu</h2>
       <p>Dostępna pula online</p>

@@ -15,19 +15,17 @@ import { createPaymentSimulator } from './payment-simulator.js';
 import { openShopManagement } from './shop-management.js';
 import { openCheckoutResumes } from './checkout-resume.js';
 import { openWidgets } from './widgets.js';
+import { openStaffAssisted, renterEmail, staffNoticeMinutes } from './staff-assisted.js';
 
 const holdDuration = 15 * 60 * 1000;
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 
-function renterDetails(input, bikeCount) {
-  const email = typeof input.email === 'string' ? input.email.trim() : '';
+function renterDetails(input, bikeCount, phoneRequired) {
+  const email = renterEmail(input.email);
   const phone = typeof input.phone === 'string' ? input.phone.trim() : '';
   const riderHeights = input.riderHeights === undefined ? [input.riderHeight] : input.riderHeights;
   const phoneDigits = phone.replace(/[^0-9]/g, '').length;
-  if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    throw new OperationError(400, 'Podaj prawidłowy adres e-mail.');
-  }
-  if (!/^\+?[0-9 ()-]+$/.test(phone) || phoneDigits < 7 || phoneDigits > 15) {
+  if ((phoneRequired || input.phone !== undefined) && (!/^\+?[0-9 ()-]+$/.test(phone) || phoneDigits < 7 || phoneDigits > 15)) {
     throw new OperationError(400, 'Podaj prawidłowy numer telefonu.');
   }
   if (!Array.isArray(riderHeights) || riderHeights.length !== bikeCount ||
@@ -148,11 +146,16 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
   const simulator = createPaymentSimulator(db, refunds);
   const policies = openCancellationPolicies(db, management);
   const resumes = openCheckoutResumes(db);
+  const assisted = openStaffAssisted(db);
 
   function describeCheckout(row, time, payment) {
-    const summary = checkoutSummary(row, time, payment);
+    const link = assisted.get(row.id);
+    const summary = {
+      ...checkoutSummary(row, time, payment),
+      ...(link && { channel: 'staff', language: link.language }),
+    };
     if (summary.status !== 'held') return summary;
-    const { terms, termsVersion } = policies.quote(row.shop_id);
+    const { terms, termsVersion } = policies.quote(row.shop_id, link ? 'staff' : 'widget');
     return { ...summary, terms, termsVersion };
   }
   const selectBooking = db.prepare('SELECT * FROM bookings WHERE payment_id = ?');
@@ -417,7 +420,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     }
     const inventory = management.inventory(row.shop_id);
     const { settings } = management.publicShop(row.shop_id);
-    const calendar = bookingCalendar(settings, time, 15);
+    const calendar = bookingCalendar(settings, time, staffNoticeMinutes);
     const period = typeof input.returnAt === 'string' && calendar.selection(input.pickupAt, input.returnAt);
     if (!period) throw new OperationError(400, 'Wybierz termin w godzinach pracy punktu i zachowaj wymagane wyprzedzenie.');
     const selection = selectionItems(input.items, undefined, inventory);
@@ -431,6 +434,95 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     const state = { items, pickupAt: input.pickupAt, returnAt: input.returnAt };
     const quoteVersion = createHash('sha256').update(JSON.stringify({ revision, ...state })).digest('hex');
     return { ...state, total, revision, quoteVersion, priceDifference: total - row.total, canApprove: total === row.total };
+  }
+
+  function reserveSelection({ shopId, categoryId, slotId, returnAt, items }, time, {
+    requestId, channelNoticeMinutes,
+  } = {}) {
+    const inventory = management.inventory(shopId);
+    const selected = selectionItems(items, categoryId, inventory);
+    const { settings } = management.publicShop(shopId);
+    const calendar = bookingCalendar(settings, time, channelNoticeMinutes);
+    const slot = calendar.selection(slotId, returnAt);
+    if (!slot) throw new OperationError(400, 'Wybierz termin z aktualnej oferty.');
+    const quantitiesFor = availability(shopId, inventory, time, settings.turnaroundBufferMinutes);
+    if (!available(selected, quantitiesFor(slot))) {
+      throw new OperationError(409, 'Wybrany sprzęt jest już zajęty w tym terminie.');
+    }
+    const id = randomUUID();
+    const cart = pricingForPickup(calendar, slot.pickupAt, inventory).cart(slot.returnAt, selected);
+    const total = cart.reduce((sum, item) => sum + item.quantity * item.unitTotal, 0);
+    const firstBike = cart.find(({ kind }) => kind === 'bike').itemId;
+    insertCheckout.run(id, requestId ?? null, shopId, firstBike, slot.pickupAt, slot.returnAt, total, time + holdDuration);
+    insertCart.run(id, JSON.stringify(cart));
+    return checkout(id);
+  }
+
+  function verifyRetriedSelection(row, { shopId, categoryId, slotId, returnAt, items }) {
+    const selected = selectionItems(items, categoryId, management.inventory(shopId));
+    if (row.shop_id !== shopId || !sameItems(selected, savedItems(row)) ||
+        new Date(row.pickup_at).toISOString() !== slotId ||
+        (returnAt !== undefined && new Date(row.return_at).toISOString() !== returnAt)) {
+      throw new OperationError(409, 'Ta próba dotyczy innego wyboru.');
+    }
+  }
+
+  function validateRequestId(requestId) {
+    if (requestId !== undefined && (typeof requestId !== 'string' || !uuid.test(requestId))) {
+      throw new OperationError(400, 'Nieprawidłowy identyfikator próby.');
+    }
+  }
+
+  function offer(shopId, pickupAt, channel = 'widget') {
+    const time = now();
+    const { shop: selectedShop, settings } = management.publicShop(shopId);
+    const calendar = bookingCalendar(settings, time, channel === 'staff' ? staffNoticeMinutes : undefined);
+    const inventory = management.inventory(selectedShop.id);
+    const quantitiesFor = availability(selectedShop.id, inventory, time, settings.turnaroundBufferMinutes);
+    const bikes = inventory.filter(({ kind }) => kind === 'bike');
+    const withAvailability = (slot) => slot && { ...slot, availableQuantities: quantitiesFor(slot) };
+    const hasBike = (slot) => slot && bikes.some(({ id }) => slot.availableQuantities[id] > 0);
+    const slots = [];
+    if (pickupAt === undefined) {
+      for (const pickup of calendar.pickups()) {
+        const preview = calendar.preview(pickup);
+        const slot = withAvailability(preview);
+        if (hasBike(slot)) slots.push(slot);
+        else if (preview) {
+          const shortest = withAvailability(calendar.returnsFor(preview.id).next().value);
+          if (hasBike(shortest)) slots.push(shortest);
+        }
+      }
+    } else {
+      for (const period of calendar.returnsFor(pickupAt)) {
+        const slot = withAvailability(period);
+        if (!hasBike(slot)) break;
+        slots.push(slot);
+      }
+    }
+    const { terms, termsVersion } = policies.quote(selectedShop.id, channel);
+    let pricing;
+    let quotedPickup;
+    return {
+      shop: { ...selectedShop, terms, termsVersion },
+      category: { id: category.id, name: inventory.find(({ id }) => id === category.id).name },
+      equipment: inventory,
+      currency: 'PLN',
+      slots: slots.map((slot) => {
+        if (slot.pickupAt !== quotedPickup) {
+          quotedPickup = slot.pickupAt;
+          pricing = pricingForPickup(calendar, quotedPickup, inventory);
+        }
+        const totals = pricing.itemTotals(slot.returnAt);
+        return {
+          ...slot,
+          pickupAt: new Date(slot.pickupAt).toISOString(),
+          returnAt: new Date(slot.returnAt).toISOString(),
+          total: totals[category.id],
+          itemTotals: totals,
+        };
+      }),
+    };
   }
 
   return {
@@ -523,90 +615,54 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
       return transaction(() => refunds.resolve(id, input.status, now()));
     },
     widgets: openWidgets(db),
-    offer(shopId, pickupAt) {
-      const time = now();
-      const { shop: selectedShop, settings } = management.publicShop(shopId);
-      const calendar = bookingCalendar(settings, time);
-      const inventory = management.inventory(selectedShop.id);
-      const quantitiesFor = availability(selectedShop.id, inventory, time, settings.turnaroundBufferMinutes);
-      const bikes = inventory.filter(({ kind }) => kind === 'bike');
-      const withAvailability = (slot) => slot && { ...slot, availableQuantities: quantitiesFor(slot) };
-      const hasBike = (slot) => slot && bikes.some(({ id }) => slot.availableQuantities[id] > 0);
-      const slots = [];
-      if (pickupAt === undefined) {
-        for (const pickup of calendar.pickups()) {
-          const preview = calendar.preview(pickup);
-          const slot = withAvailability(preview);
-          if (hasBike(slot)) slots.push(slot);
-          else if (preview) {
-            const shortest = withAvailability(calendar.returnsFor(preview.id).next().value);
-            if (hasBike(shortest)) slots.push(shortest);
-          }
-        }
-      } else {
-        for (const period of calendar.returnsFor(pickupAt)) {
-          const slot = withAvailability(period);
-          if (!hasBike(slot)) break;
-          slots.push(slot);
-        }
-      }
-      const { terms, termsVersion } = policies.quote(selectedShop.id);
-      let pricing;
-      let quotedPickup;
-      return {
-        shop: { ...selectedShop, terms, termsVersion },
-        category: { id: category.id, name: inventory.find(({ id }) => id === category.id).name },
-        equipment: inventory,
-        currency: 'PLN',
-        slots: slots.map((slot) => {
-          if (slot.pickupAt !== quotedPickup) {
-            quotedPickup = slot.pickupAt;
-            pricing = pricingForPickup(calendar, quotedPickup, inventory);
-          }
-          const totals = pricing.itemTotals(slot.returnAt);
-          return {
-            ...slot,
-            pickupAt: new Date(slot.pickupAt).toISOString(),
-            returnAt: new Date(slot.returnAt).toISOString(),
-            total: totals[category.id],
-            itemTotals: totals,
-          };
-        }),
-      };
+    staffOffer(actor, shopId, pickupAt) {
+      management.accessible(actor, shopId);
+      return { ...offer(shopId, pickupAt, 'staff'), languages: assisted.languages(shopId) };
     },
-    hold({ shopId, categoryId, slotId, returnAt, requestId, items }) {
-      if (requestId !== undefined && (typeof requestId !== 'string' || !uuid.test(requestId))) {
-        throw new OperationError(400, 'Nieprawidłowy identyfikator próby.');
-      }
+    sendStaffPaymentLink(actor, shopId, input) {
+      return transaction(() => {
+        management.accessible(actor, shopId);
+        const { requestId, language = 'pl' } = input;
+        validateRequestId(requestId);
+        assisted.validateLanguage(shopId, language);
+        const email = renterEmail(input.email);
+        const time = now();
+        const key = requestId && 'staff:' + actor.username + ':' + requestId;
+        const selection = { ...input, shopId };
+        const retry = key && selectRetry.get(key);
+        if (retry) {
+          verifyRetriedSelection(retry, selection);
+          const link = assisted.get(retry.id);
+          if (link.recipient !== email || link.language !== language) {
+            throw new OperationError(409, 'Ta próba dotyczy innego odbiorcy lub języka.');
+          }
+          return assisted.delivery(describeCheckout(retry, time, checkoutPayment.get(retry.id)));
+        }
+        const row = reserveSelection(selection, time, { requestId: key, channelNoticeMinutes: staffNoticeMinutes });
+        const { shop } = management.publicShop(shopId);
+        assisted.enqueue(actor, checkoutSummary(row, time), shop, email, language);
+        return assisted.delivery(describeCheckout(row, time));
+      });
+    },
+    staffCheckout(id) {
+      if (!assisted.get(id)) throw new OperationError(404, 'Nie znaleziono linku do płatności.');
+      const row = checkout(id);
+      const { shop } = management.publicShop(row.shop_id);
+      return { ...describeCheckout(row, now(), checkoutPayment.get(id)), shop };
+    },
+    offer,
+    hold(selection) {
+      const { shopId, requestId } = selection;
+      validateRequestId(requestId);
       if (typeof shopId !== 'string') throw new OperationError(400, 'Wybierz punkt i termin z aktualnej oferty.');
       return transaction(() => {
         const time = now();
-        const inventory = management.inventory(shopId);
-        const selected = selectionItems(items, categoryId, inventory);
         const retry = requestId && selectRetry.get(requestId);
         if (retry) {
-          if (retry.shop_id !== shopId || !sameItems(selected, savedItems(retry)) ||
-              new Date(retry.pickup_at).toISOString() !== slotId ||
-              (returnAt !== undefined && new Date(retry.return_at).toISOString() !== returnAt)) {
-            throw new OperationError(409, 'Ta próba dotyczy innego wyboru.');
-          }
+          verifyRetriedSelection(retry, selection);
           return describeCheckout(retry, time, checkoutPayment.get(retry.id));
         }
-        const { settings } = management.publicShop(shopId);
-        const calendar = bookingCalendar(settings, time);
-        const slot = calendar.selection(slotId, returnAt);
-        if (!slot) throw new OperationError(400, 'Wybierz termin z aktualnej oferty.');
-        const quantitiesFor = availability(shopId, inventory, time, settings.turnaroundBufferMinutes);
-        if (!available(selected, quantitiesFor(slot))) {
-          throw new OperationError(409, 'Wybrany sprzęt jest już zajęty w tym terminie.');
-        }
-        const id = randomUUID();
-        const cart = pricingForPickup(calendar, slot.pickupAt, inventory).cart(slot.returnAt, selected);
-        const total = cart.reduce((sum, item) => sum + item.quantity * item.unitTotal, 0);
-        const firstBike = cart.find(({ kind }) => kind === 'bike').itemId;
-        insertCheckout.run(id, requestId ?? null, shopId, firstBike, slot.pickupAt, slot.returnAt, total, time + holdDuration);
-        insertCart.run(id, JSON.stringify(cart));
-        return describeCheckout(checkout(id), time);
+        return describeCheckout(reserveSelection(selection, time, { requestId }), time);
       });
     },
     checkout(id) {
@@ -619,7 +675,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
       return transaction(() => {
         const time = now();
         const current = checkout(id);
-        if (current.status !== 'held' || current.deadline <= time) {
+        if (assisted.get(id) || current.status !== 'held' || current.deadline <= time) {
           throw new OperationError(409, 'Link można wysłać w trakcie wypełniania formularza.');
         }
         return resumes.issue(id, input, bikeCount(current), time);
@@ -650,7 +706,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     saveResumeDraft(id, input) {
       return transaction(() => {
         const current = checkout(id);
-        if (current.status !== 'held' || current.deadline <= now()) return { saved: false };
+        if (assisted.get(id) || current.status !== 'held' || current.deadline <= now()) return { saved: false };
         resumes.save(id, input, bikeCount(current));
         return { saved: true };
       });
@@ -664,13 +720,16 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         if (current.deadline <= time) throw new OperationError(409, 'Blokada wygasła. Wybierz termin ponownie.');
         if (payment) return describeCheckout(current, time, payment);
 
-        const { email, phone, riderHeights } = renterDetails(input, bikeCount(current));
-        const terms = policies.accept(current, input.termsVersion);
+        const link = assisted.get(current.id);
+        const details = link ? { ...input, email: link.recipient } : input;
+        const count = bikeCount(current);
+        const { email, phone, riderHeights } = renterDetails(details, count, !link);
+        const terms = policies.accept(current, input.termsVersion, link ? 'staff' : 'widget');
         const paymentId = randomUUID();
         insertPayment.run(paymentId, id);
-        startPayment.run(time + holdDuration, email, phone, riderHeights[0], terms, time, id);
+        startPayment.run(link ? current.deadline : time + holdDuration, email, phone, riderHeights[0], terms, time, id);
         recordHeights.run(JSON.stringify(riderHeights), id);
-        resumes.save(id, { ...input, email, phone, riderHeights }, bikeCount(current));
+        if (!link) resumes.save(id, { ...details, email, phone, riderHeights }, count);
         return describeCheckout(checkout(id), time, { id: paymentId });
       });
     },
@@ -685,6 +744,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         currency: 'PLN',
         expiresAt: new Date(current.deadline).toISOString(),
         serverTime: new Date(time).toISOString(),
+        ...(assisted.get(current.id) && { checkoutUrl: assisted.checkoutUrl(current.id) }),
         ...(refund && { refund }),
       };
     },

@@ -4,10 +4,15 @@ import { OperationError } from './operation-error.js';
 const minute = 60_000;
 const defaults = { freeCancellationMinutes: 1440, lateRefundPercent: 50, noShowGraceMinutes: 30 };
 
-function termsText(shopTerms, policy) {
+const checkoutTerms = {
+  staff: 'Rezerwację potwierdza płatność. Nieopłacony sprzęt wraca do puli 15 minut po wysłaniu linku. Otwarcie linku lub rozpoczęcie płatności nie zmienia terminu.',
+  widget: 'Nieopłacony sprzęt wraca do puli po zakończeniu blokady wyświetlonej w formularzu lub okna rozpoczętej płatności. Prywatny link do dokończenia rezerwacji działa przez 24 godziny od wysłania i nie przedłuża blokady.',
+};
+
+function termsText(shopTerms, policy, channel) {
   return [
     shopTerms,
-    'Nieopłacony sprzęt wraca do puli po zakończeniu blokady wyświetlonej w formularzu lub okna rozpoczętej płatności. Prywatny link do dokończenia rezerwacji działa przez 24 godziny od wysłania i nie przedłuża blokady.',
+    checkoutTerms[channel],
     'Całą rezerwację możesz anulować przez prywatny link w potwierdzeniu lub kontaktując się ze sprzedawcą.',
     'Jeśli do odbioru pozostało więcej niż ' + policy.freeCancellationMinutes + ' min, otrzymasz 100% przedpłaty. Przy krótszym czasie lub dokładnie na granicy zwrot wynosi ' + policy.lateRefundPercent + '%.',
     'W razie nieodebrania sprzętu po ' + policy.noShowGraceMinutes + ' min od terminu odbioru przedpłata nie podlega zwrotowi.',
@@ -42,10 +47,10 @@ export function openCancellationPolicies(db, management) {
     return saved ? JSON.parse(saved.settings) : defaults;
   }
 
-  function quote(shopId) {
+  function quote(shopId, channel = 'widget') {
     const { shop, partnerId } = management.publicShop(shopId);
     const policy = readPolicy(partnerId);
-    const terms = termsText(shop.terms, policy);
+    const terms = termsText(shop.terms, policy, channel);
     const termsVersion = createHash('sha256').update(terms).digest('hex');
     return { terms, termsVersion, policy };
   }
@@ -68,8 +73,8 @@ export function openCancellationPolicies(db, management) {
       savePolicy.run(actor.partnerId, JSON.stringify(settings));
       return settings;
     },
-    accept(checkout, termsVersion) {
-      const { terms, termsVersion: expected, policy } = quote(checkout.shop_id);
+    accept(checkout, termsVersion, channel) {
+      const { terms, termsVersion: expected, policy } = quote(checkout.shop_id, channel);
       if (termsVersion !== undefined && termsVersion !== expected) {
         throw new OperationError(409, 'Warunki najmu się zmieniły. Zapoznaj się z nimi ponownie.');
       }

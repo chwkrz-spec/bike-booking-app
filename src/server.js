@@ -16,6 +16,8 @@ const assets = new Map([
   ['/assets/booking.js', ['booking.js', 'text/javascript']],
   ['/assets/staff.js', ['staff.js', 'text/javascript']],
   ['/assets/staff-amendments.js', ['staff-amendments.js', 'text/javascript']],
+  ['/assets/staff-assisted.js', ['staff-assisted.js', 'text/javascript']],
+  ['/assets/staff-checkout.js', ['staff-checkout.js', 'text/javascript']],
   ['/assets/staff-equipment.js', ['staff-equipment.js', 'text/javascript']],
   ['/assets/staff-widgets.js', ['staff-widgets.js', 'text/javascript']],
 ]);
@@ -150,6 +152,13 @@ export function createApp({
           if (action === 'return') return json(response, 200, booking.returnEquipment(actor, shopId, bookingId));
           return json(response, 200, booking.markNoShow(actor, shopId, bookingId));
         }
+        const assisted = path.match(/^\/api\/staff\/shops\/([\w-]+)\/(assisted-offer|payment-links)$/);
+        if (assisted?.[2] === 'assisted-offer' && method === 'GET') {
+          return json(response, 200, booking.staffOffer(actor, assisted[1], url.searchParams.get('pickupAt') ?? undefined));
+        }
+        if (assisted?.[2] === 'payment-links' && method === 'POST') {
+          return json(response, 201, booking.sendStaffPaymentLink(actor, assisted[1], await staffBody(request)));
+        }
         const shopCopy = path.match(/^\/api\/staff\/shops\/([\w-]+)\/copy-configuration$/);
         if (shopCopy && method === 'POST') {
           return json(response, 200, management.copyConfiguration(actor, shopCopy[1], await staffBody(request)));
@@ -183,6 +192,9 @@ export function createApp({
       if (renterBooking && method === 'POST' && renterBooking[2]) {
         return json(response, 200, booking.cancelRenterBooking(renterBooking[1], await staffBody(request)));
       }
+
+      const assistedCheckout = path.match(/^\/api\/staff-checkout\/([\w-]+)$/);
+      if (method === 'GET' && assistedCheckout) return json(response, 200, booking.staffCheckout(assistedCheckout[1]));
 
       const confirmation = path.match(/^\/api\/checkouts\/([\w-]+)\/confirmation$/);
       if (method === 'GET' && confirmation) return json(response, 200, booking.confirmation(confirmation[1]));
@@ -252,6 +264,11 @@ export function createApp({
         return await file(response, 'widget.html', 'text/html', { widgetMode });
       }
       if (method === 'GET' && /^\/checkout-resume\/[\w-]+$/.test(path)) return await file(response, 'widget.html');
+      const staffCheckoutPage = path.match(/^\/staff-checkout\/([\w-]+)$/);
+      if (method === 'GET' && staffCheckoutPage) {
+        booking.staffCheckout(staffCheckoutPage[1]);
+        return await file(response, 'staff-checkout.html');
+      }
       if (method === 'GET' && path === '/') return await file(response, 'widget.html');
       if (method === 'GET' && /^\/payment-simulator\/[\w-]+$/.test(path)) return await file(response, 'payment.html');
       if (method === 'GET' && assets.has(path)) return await file(response, ...assets.get(path));

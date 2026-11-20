@@ -2,6 +2,7 @@ import { formatAmount, formatSlot, get, request, showError } from './common.js';
 import { amendmentControls } from './staff-amendments.js';
 import { catalogForms, equipmentOperations, pickupControls, stockForms } from './staff-equipment.js';
 
+import { setupAssistedBooking } from './staff-assisted.js';
 import { setupWidgets, showWidgetShops } from './staff-widgets.js';
 
 const dayNames = {
@@ -126,6 +127,7 @@ function displaySettings(settings) {
 
 async function refreshShop() {
   const selected = ++viewingShop;
+  const loadAssisted = refreshAssistedBooking(shopSelect.value);
   get('shop-admin').hidden = true;
   get('list').hidden = true;
   get('empty').hidden = true;
@@ -134,7 +136,7 @@ async function refreshShop() {
     const catalogPath = staffShopPath('catalog');
     const [bookings, stock, settings, catalog] = await Promise.all([
       request(staffShopPath('bookings')), request(staffShopPath('stock')), request(staffShopPath('settings')),
-      owner ? request(catalogPath) : [],
+      owner ? request(catalogPath) : [], loadAssisted,
     ]);
     if (selected !== viewingShop) return;
     displayBookings(bookings, stock);
@@ -255,6 +257,7 @@ saves(assignmentForm, async () => {
   await refreshMembers(username.value);
   return 'Zapisano uprawnienia.';
 });
+const refreshAssistedBooking = setupAssistedBooking(saves);
 shopSelect.addEventListener('change', refreshShop);
 get('assignment-member').addEventListener('change', assignmentState);
 get('assignment-shop').addEventListener('change', assignmentState);
