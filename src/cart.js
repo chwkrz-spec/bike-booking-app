@@ -1,4 +1,3 @@
-import { provisionalHourlyTotal } from './booking-calendar.js';
 import { OperationError } from './operation-error.js';
 
 const invalidSelection = () => new OperationError(400, 'Wybierz prawidłowe ilości sprzętu i co najmniej jeden rower.');
@@ -21,12 +20,6 @@ export function selectionItems(items, categoryId, inventory) {
 export function sameItems(left, right) {
   return left.length === right.length &&
     left.every(({ itemId, quantity }, index) => itemId === right[index].itemId && quantity === right[index].quantity);
-}
-
-export function itemTotals(slot, inventory) {
-  return Object.fromEntries(inventory.map(({ id, kind, hourlyRate, bookingRate }) => [
-    id, kind === 'bike' ? provisionalHourlyTotal(slot, hourlyRate) : bookingRate,
-  ]));
 }
 
 export function stockForPeriod(inventory, commitments, bufferMinutes = 0) {

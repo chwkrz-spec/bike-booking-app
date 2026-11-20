@@ -39,6 +39,9 @@ test('Dokładnie na granicy 24 godzin prywatny link zwraca 500 PLN z podziałem 
   const { body: offer } = await app.request('/api/offer');
   assert.equal((await post(app, '/api/staff/shops/' + offer.shop.id + '/settings', {
     maxRentalMinutes: 3000,
+    weeklyHours: Object.fromEntries(
+      ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].map((day) => [day, [['00:00', '24:00']]]),
+    ),
   }, owner)).status, 200);
   const checkout = await holdRental(app, {
     slotId: '2027-01-16T12:00:00.000Z',

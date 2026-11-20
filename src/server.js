@@ -131,12 +131,19 @@ export function createApp({
         if (pickup && method === 'POST') {
           return json(response, 200, booking.assignPickup(actor, pickup[1], pickup[2], await staffBody(request)));
         }
-        const shopRoute = path.match(/^\/api\/staff\/shops\/([\w-]+)\/(settings|stock|bookings)$/);
+        const shopRoute = path.match(/^\/api\/staff\/shops\/([\w-]+)\/(settings|stock|catalog|bookings)$/);
         if (shopRoute) {
           const [, shopId, resource] = shopRoute;
           if (resource === 'settings') {
             if (method === 'GET') return json(response, 200, management.settings(actor, shopId));
             if (method === 'POST') return json(response, 200, management.settings(actor, shopId, await staffBody(request)));
+          }
+          if (resource === 'catalog') {
+            if (method === 'GET') return json(response, 200, management.catalog(actor, shopId));
+            if (method === 'POST') {
+              const input = await staffBody(request);
+              return json(response, input.id === undefined ? 201 : 200, management.catalog(actor, shopId, input));
+            }
           }
           if (resource === 'stock') {
             if (method === 'GET') return json(response, 200, management.stock(actor, shopId));

@@ -70,6 +70,19 @@ function settingsUpdate(input, current, isOwner) {
   return settings;
 }
 
+function equipmentItem({ name, kind, hourlyRate, dayRate = null, fullDayRate = null, bookingRate }, id) {
+  const validRate = (value, minimum = 1) => Number.isInteger(value) && value >= minimum && value <= 1_000_000;
+  const invalid = () => new OperationError(400, 'Podaj prawidłowe stawki sprzętu w groszach.');
+  const item = { id, name: textField(name, 120), kind };
+  if (kind === 'accessory') {
+    if (!validRate(bookingRate, 0)) throw invalid();
+    return { ...item, bookingRate };
+  }
+  if (kind !== 'bike' || !validRate(hourlyRate) || (dayRate !== null && !validRate(dayRate)) ||
+      (fullDayRate !== null && !validRate(fullDayRate))) throw invalid();
+  return { ...item, hourlyRate, dayRate, fullDayRate };
+}
+
 function requireOwner(actor) {
   if (actor.role !== 'owner') throw forbidden();
 }
@@ -86,6 +99,12 @@ export function openShopManagement(db, { staffPassword, demoOwners = [] }) {
       name TEXT NOT NULL,
       terms TEXT NOT NULL,
       settings TEXT NOT NULL
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS shop_catalog (
+      shop_id TEXT NOT NULL REFERENCES shops(id),
+      item_id TEXT NOT NULL,
+      item TEXT NOT NULL,
+      PRIMARY KEY (shop_id, item_id)
     ) STRICT;
     CREATE TABLE IF NOT EXISTS shop_stock (
       shop_id TEXT NOT NULL REFERENCES shops(id),
@@ -140,6 +159,11 @@ export function openShopManagement(db, { staffPassword, demoOwners = [] }) {
   const selectPartner = db.prepare('SELECT seller FROM partners WHERE id = ?');
   const updatePartner = db.prepare('UPDATE partners SET seller = ? WHERE id = ?');
   const updateSettings = db.prepare('UPDATE shops SET settings = ? WHERE id = ?');
+  const selectCatalog = db.prepare('SELECT item_id, item FROM shop_catalog WHERE shop_id = ? ORDER BY rowid');
+  const upsertEquipment = db.prepare(`
+    INSERT INTO shop_catalog VALUES (?, ?, ?)
+    ON CONFLICT (shop_id, item_id) DO UPDATE SET item = excluded.item
+  `);
   const selectQuantities = db.prepare('SELECT item_id, quantity FROM shop_stock WHERE shop_id = ?');
   const updateQuantity = db.prepare(`
     INSERT INTO shop_stock VALUES (?, ?, ?)
@@ -148,7 +172,11 @@ export function openShopManagement(db, { staffPassword, demoOwners = [] }) {
 
   function inventory(shopId) {
     const quantities = new Map(selectQuantities.all(shopId).map(({ item_id, quantity }) => [item_id, quantity]));
-    return equipment.map(({ stock, ...item }) => ({ ...item, quantity: quantities.get(item.id) ?? stock }));
+    const catalog = new Map(equipment.map((item) => [item.id, item]));
+    for (const { item_id, item } of selectCatalog.all(shopId)) {
+      catalog.set(item_id, { stock: catalog.get(item_id)?.stock ?? 0, ...JSON.parse(item) });
+    }
+    return [...catalog.values()].map(({ stock, ...item }) => ({ ...item, quantity: quantities.get(item.id) ?? stock }));
   }
 
   function accessible(actor, shopId) {
@@ -217,11 +245,25 @@ export function openShopManagement(db, { staffPassword, demoOwners = [] }) {
       return { id, name, canRefund: true };
     },
     inventory,
+    catalog(actor, shopId, input) {
+      requireOwner(actor);
+      accessible(actor, shopId);
+      const items = inventory(shopId);
+      if (input === undefined) return items;
+      if (input.id !== undefined) {
+        const current = items.find(({ id }) => id === input.id);
+        if (!current) throw missing();
+        if (current.kind !== input.kind) throw new OperationError(400, 'Nie można zmienić rodzaju zapisanego sprzętu.');
+      }
+      const item = equipmentItem(input, input.id ?? randomUUID());
+      upsertEquipment.run(shopId, item.id, JSON.stringify(item));
+      return item;
+    },
     stock(actor, shopId, input) {
       accessible(actor, shopId);
       if (input !== undefined) {
         const { itemId, quantity } = input;
-        if (!equipment.some(({ id }) => id === itemId) || !Number.isInteger(quantity) || quantity < 0 || quantity > 1000) {
+        if (!inventory(shopId).some(({ id }) => id === itemId) || !Number.isInteger(quantity) || quantity < 0 || quantity > 1000) {
           throw new OperationError(400, 'Podaj prawidłową ilość sprzętu od 0 do 1000.');
         }
         updateQuantity.run(shopId, itemId, quantity);

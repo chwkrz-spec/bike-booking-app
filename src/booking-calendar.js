@@ -33,10 +33,15 @@ export function bookingCalendar(settings, now, channelNoticeMinutes = 30) {
     return settings.holidayHours[date] ?? settings.weeklyHours[day];
   }
 
+  function pricingPeriod(at) {
+    const local = localTime(at);
+    const open = hours(local).some(([opening, closing]) => local.time >= opening && local.time < closing);
+    return { date: local.date, open };
+  }
+
   function canPickUp(at) {
     if (!Number.isFinite(at) || at < firstPickup || at > lastPickup) return false;
-    const local = localTime(at);
-    return hours(local).some(([opening, closing]) => local.time >= opening && local.time < closing);
+    return pricingPeriod(at).open;
   }
 
   function canReturn(at) {
@@ -68,6 +73,7 @@ export function bookingCalendar(settings, now, channelNoticeMinutes = 30) {
       }
     },
     preview,
+    pricingPeriod,
     *returnsFor(value) {
       const at = timestamp(value);
       if (canPickUp(at)) yield* returns(at);
@@ -78,8 +84,4 @@ export function bookingCalendar(settings, now, channelNoticeMinutes = 30) {
       return returnValue === undefined ? preview(pickupAt) : period(pickupAt, timestamp(returnValue));
     },
   };
-}
-
-export function provisionalHourlyTotal({ pickupAt, returnAt }, hourlyRate) {
-  return Math.ceil((returnAt - pickupAt) / hour) * hourlyRate;
 }

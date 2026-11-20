@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { bookingCalendar } from './booking-calendar.js';
-import { itemTotals, sameItems, selectionItems, stockForPeriod } from './cart.js';
+import { sameItems, selectionItems, stockForPeriod } from './cart.js';
+import { pricingForPickup } from './pricing.js';
 import { openBookingCancellations } from './booking-cancellations.js';
 import { openCancellationPolicies } from './cancellation-policy.js';
 import { openRefunds } from './refunds.js';
@@ -262,13 +263,19 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         }
       }
       const { terms, termsVersion } = policies.quote(selectedShop.id);
+      let pricing;
+      let quotedPickup;
       return {
         shop: { ...selectedShop, terms, termsVersion },
-        category: { id: category.id, name: category.name },
+        category: { id: category.id, name: inventory.find(({ id }) => id === category.id).name },
         equipment: inventory,
         currency: 'PLN',
         slots: slots.map((slot) => {
-          const totals = itemTotals(slot, inventory);
+          if (slot.pickupAt !== quotedPickup) {
+            quotedPickup = slot.pickupAt;
+            pricing = pricingForPickup(calendar, quotedPickup, inventory);
+          }
+          const totals = pricing.itemTotals(slot.returnAt);
           return {
             ...slot,
             pickupAt: new Date(slot.pickupAt).toISOString(),
@@ -298,15 +305,15 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
           return describeCheckout(retry, time, checkoutPayment.get(retry.id));
         }
         const { settings } = management.publicShop(shopId);
-        const slot = bookingCalendar(settings, time).selection(slotId, returnAt);
+        const calendar = bookingCalendar(settings, time);
+        const slot = calendar.selection(slotId, returnAt);
         if (!slot) throw new OperationError(400, 'Wybierz termin z aktualnej oferty.');
         const quantitiesFor = availability(shopId, inventory, time, settings.turnaroundBufferMinutes);
         if (!available(selected, quantitiesFor(slot))) {
           throw new OperationError(409, 'Wybrany sprzęt jest już zajęty w tym terminie.');
         }
         const id = randomUUID();
-        const totals = itemTotals(slot, inventory);
-        const cart = selected.map((item) => ({ ...item, unitTotal: totals[item.itemId] }));
+        const cart = pricingForPickup(calendar, slot.pickupAt, inventory).cart(slot.returnAt, selected);
         const total = cart.reduce((sum, item) => sum + item.quantity * item.unitTotal, 0);
         const firstBike = cart.find(({ kind }) => kind === 'bike').itemId;
         insertCheckout.run(id, requestId ?? null, shopId, firstBike, slot.pickupAt, slot.returnAt, total, time + holdDuration);

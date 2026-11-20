@@ -1,5 +1,5 @@
 import { formatAmount, formatSlot, get, request, showError } from './common.js';
-import { pickupControls, stockForms } from './staff-equipment.js';
+import { catalogForms, pickupControls, stockForms } from './staff-equipment.js';
 
 import { setupWidgets, showWidgetShops } from './staff-widgets.js';
 
@@ -127,12 +127,15 @@ async function refreshShop() {
   get('empty').hidden = true;
   if (!shopSelect.value) return;
   try {
-    const [bookings, stock, settings] = await Promise.all([
+    const catalogPath = staffShopPath('catalog');
+    const [bookings, stock, settings, catalog] = await Promise.all([
       request(staffShopPath('bookings')), request(staffShopPath('stock')), request(staffShopPath('settings')),
+      owner ? request(catalogPath) : [],
     ]);
     if (selected !== viewingShop) return;
     displayBookings(bookings);
     get('staff-stock').replaceChildren(...stockForms(stock, staffShopPath('stock'), saves));
+    get('staff-catalog').replaceChildren(...catalogForms(catalog, catalogPath, saves, refreshShop));
     displaySettings(settings);
     get('shop-admin').hidden = false;
   } catch (error) {
@@ -246,7 +249,7 @@ assignmentForm.elements.assigned.addEventListener('change', () => {
 try {
   const session = await request('/api/staff/session');
   owner = session.role === 'owner';
-  for (const id of ['owner-schedule', 'partner-admin', 'policy-admin', 'member-admin']) get(id).hidden = !owner;
+  for (const id of ['owner-schedule', 'owner-catalog', 'partner-admin', 'policy-admin', 'member-admin']) get(id).hidden = !owner;
   await refreshShops();
   if (owner) {
     const [partner, policy] = await Promise.all([
