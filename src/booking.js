@@ -62,7 +62,7 @@ function checkoutSummary(row, now, payment) {
     serverTime: new Date(now).toISOString(),
     total: row.total,
     currency: 'PLN',
-    ...(payment && { paymentUrl: '/payment-simulator/' + payment.id }),
+    ...(payment && row.status !== 'replaced' && { paymentUrl: '/payment-simulator/' + payment.id }),
   };
 }
 
@@ -211,6 +211,14 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
   `);
   const confirmCheckout = db.prepare("UPDATE checkouts SET status = 'confirmed' WHERE id = ?");
   const refundCheckout = db.prepare("UPDATE checkouts SET status = 'refund_started' WHERE id = ?");
+  const replaceCheckout = db.prepare("UPDATE checkouts SET status = 'replaced' WHERE id = ?");
+  const pendingStaffLinks = db.prepare(`
+    SELECT c.*, cart.items, link.recipient, link.language FROM staff_payment_links link
+    JOIN checkouts c ON c.id = link.checkout_id
+    LEFT JOIN checkout_carts cart ON cart.checkout_id = c.id
+    WHERE c.shop_id = ? AND c.status IN ('held', 'payment') AND c.pickup_at > ?
+    ORDER BY c.pickup_at, c.id
+  `);
   const verifyPayment = db.prepare("UPDATE payments SET status = 'verified' WHERE id = ?");
   const selectRetry = db.prepare(`
     SELECT c.*, cart.items FROM checkouts c LEFT JOIN checkout_carts cart ON cart.checkout_id = c.id WHERE c.request_id = ?
@@ -438,7 +446,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
   }
 
   function reserveSelection({ shopId, categoryId, slotId, returnAt, items }, time, {
-    requestId, channelNoticeMinutes,
+    requestId, channelNoticeMinutes, excludeCheckoutId,
   } = {}) {
     const inventory = management.inventory(shopId);
     const selected = selectionItems(items, categoryId, inventory);
@@ -446,7 +454,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     const calendar = bookingCalendar(settings, time, channelNoticeMinutes);
     const slot = calendar.selection(slotId, returnAt);
     if (!slot) throw new OperationError(400, 'Wybierz termin z aktualnej oferty.');
-    const quantitiesFor = availability(shopId, inventory, time, settings.turnaroundBufferMinutes);
+    const quantitiesFor = availability(shopId, inventory, time, settings.turnaroundBufferMinutes, excludeCheckoutId);
     if (!available(selected, quantitiesFor(slot))) {
       throw new OperationError(409, 'Wybrany sprzęt jest już zajęty w tym terminie.');
     }
@@ -457,6 +465,19 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     insertCheckout.run(id, requestId ?? null, shopId, firstBike, slot.pickupAt, slot.returnAt, total, time + holdDuration);
     insertCart.run(id, JSON.stringify(cart));
     return checkout(id);
+  }
+
+  function staffPaymentLink(shopId, id) {
+    const row = selectCheckout.get(id);
+    const link = assisted.get(id);
+    if (row?.shop_id !== shopId || !link) throw new OperationError(404, 'Nie znaleziono linku do płatności.');
+    return { row, link };
+  }
+
+  function requireReplaceable(row) {
+    if (!['held', 'payment'].includes(row.status)) {
+      throw new OperationError(409, 'Tego linku nie można już podmienić.');
+    }
   }
 
   function verifyRetriedSelection(row, { shopId, categoryId, slotId, returnAt, items }) {
@@ -474,12 +495,12 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     }
   }
 
-  function offer(shopId, pickupAt, channel = 'widget') {
+  function offer(shopId, pickupAt, channel = 'widget', excludeCheckoutId) {
     const time = now();
     const { shop: selectedShop, settings } = management.publicShop(shopId);
     const calendar = bookingCalendar(settings, time, channel === 'staff' ? staffNoticeMinutes : undefined);
     const inventory = management.inventory(selectedShop.id);
-    const quantitiesFor = availability(selectedShop.id, inventory, time, settings.turnaroundBufferMinutes);
+    const quantitiesFor = availability(selectedShop.id, inventory, time, settings.turnaroundBufferMinutes, excludeCheckoutId);
     const bikes = inventory.filter(({ kind }) => kind === 'bike');
     const withAvailability = (slot) => slot && { ...slot, availableQuantities: quantitiesFor(slot) };
     const hasBike = (slot) => slot && bikes.some(({ id }) => slot.availableQuantities[id] > 0);
@@ -631,19 +652,28 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
       return transaction(() => refunds.resolve(id, input.status, now()));
     },
     widgets: openWidgets(db),
-    staffOffer(actor, shopId, pickupAt) {
+    staffOffer(actor, shopId, pickupAt, replacingId) {
       management.accessible(actor, shopId);
-      return { ...offer(shopId, pickupAt, 'staff'), languages: assisted.languages(shopId) };
+      if (replacingId) requireReplaceable(staffPaymentLink(shopId, replacingId).row);
+      return { ...offer(shopId, pickupAt, 'staff', replacingId), languages: assisted.languages(shopId) };
     },
-    sendStaffPaymentLink(actor, shopId, input) {
+    staffPaymentLinks(actor, shopId) {
+      management.accessible(actor, shopId);
+      const time = now();
+      return pendingStaffLinks.all(shopId, time).map((row) => ({
+        ...checkoutSummary(row, time), email: row.recipient, language: row.language,
+      }));
+    },
+    sendStaffPaymentLink(actor, shopId, input, replacingId) {
       return transaction(() => {
         management.accessible(actor, shopId);
-        const { requestId, language = 'pl' } = input;
+        const original = replacingId && staffPaymentLink(shopId, replacingId);
+        const { requestId, language = original?.link.language ?? 'pl' } = input;
         validateRequestId(requestId);
-        assisted.validateLanguage(shopId, language);
         const email = renterEmail(input.email);
         const time = now();
-        const key = requestId && 'staff:' + actor.username + ':' + requestId;
+        const operation = replacingId ? 'staff-replace:' + replacingId : 'staff';
+        const key = requestId && operation + ':' + actor.username + ':' + requestId;
         const selection = { ...input, shopId };
         const retry = key && selectRetry.get(key);
         if (retry) {
@@ -654,9 +684,14 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
           }
           return assisted.delivery(describeCheckout(retry, time, checkoutPayment.get(retry.id)));
         }
-        const row = reserveSelection(selection, time, { requestId: key, channelNoticeMinutes: staffNoticeMinutes });
+        if (original) requireReplaceable(original.row);
+        assisted.validateLanguage(shopId, language);
+        const row = reserveSelection(selection, time, {
+          requestId: key, channelNoticeMinutes: staffNoticeMinutes, excludeCheckoutId: replacingId,
+        });
         const { shop } = management.publicShop(shopId);
         assisted.enqueue(actor, checkoutSummary(row, time), shop, email, language);
+        if (original) replaceCheckout.run(replacingId);
         return assisted.delivery(describeCheckout(row, time));
       });
     },
@@ -732,7 +767,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         const time = now();
         const current = checkout(id);
         const payment = checkoutPayment.get(id);
-        if (['confirmed', 'cancelled', 'no_show', 'refund_started'].includes(current.status)) return describeCheckout(current, time, payment);
+        if (['confirmed', 'cancelled', 'no_show', 'refund_started', 'replaced'].includes(current.status)) return describeCheckout(current, time, payment);
         if (current.deadline <= time) throw new OperationError(409, 'Blokada wygasła. Wybierz termin ponownie.');
         if (payment) return describeCheckout(current, time, payment);
 
@@ -783,7 +818,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
 
         const time = now();
         const expired = current.deadline <= time;
-        if (!simulator.verify(id)) return { status: expired ? 'expired' : 'payment' };
+        if (!simulator.verify(id)) return { status: checkoutSummary(current, time).status };
         const startedRefund = simulator.refund(id);
         const originalSlot = { pickupAt: current.pickup_at, returnAt: current.return_at };
         const canConfirm = () => {
@@ -792,7 +827,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
           const quantitiesFor = availability(current.shop_id, inventory, time, settings.turnaroundBufferMinutes, current.id);
           return available(savedItems(current), quantitiesFor(originalSlot));
         };
-        if (startedRefund || (expired && originalSlot.pickupAt <= time) || !canConfirm()) {
+        if (startedRefund || current.status === 'replaced' || (expired && originalSlot.pickupAt <= time) || !canConfirm()) {
           const refund = startedRefund ?? simulator.startFullRefund(id, time);
           refundCheckout.run(current.id);
           insertFailureMessage.run(id, current.email, 'Zwrot płatności za rezerwację',

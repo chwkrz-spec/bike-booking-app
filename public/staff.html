@@ -37,6 +37,10 @@
     </section>
     <section class="booking-card" id="assisted-booking" aria-labelledby="assisted-title" hidden>
       <h2 id="assisted-title">Rezerwacja przygotowana przez obsługę</h2>
+      <div id="staff-link-controls" hidden>
+        <label for="staff-link-to-replace">Link do poprawienia</label>
+        <select id="staff-link-to-replace"></select>
+      </div>
       <p id="staff-no-slots" hidden>Brak dostępnych terminów.</p>
       <form id="staff-payment-link">
         <label for="staff-pickup">Termin odbioru</label>
@@ -49,6 +53,10 @@
         </fieldset>
         <label for="staff-renter-email">Adres e-mail klienta</label>
         <input type="email" id="staff-renter-email" autocomplete="off" required maxlength="254">
+        <div id="staff-language-controls" hidden>
+          <label for="staff-checkout-language">Język wiadomości i płatności</label>
+          <select id="staff-checkout-language" name="language"></select>
+        </div>
         <div class="total-line"><span>Razem</span><strong id="staff-selection-total">—</strong></div>
         <button type="submit" disabled>Wyślij link do płatności</button>
       </form>

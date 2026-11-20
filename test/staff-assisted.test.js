@@ -108,3 +108,98 @@ test('Tylko pracownik przypisany do punktu lub właściciel może wysłać link 
   assert.equal((await post(app, shopPath(remote.shop.id, 'payment-links'), { ...remoteSelection, email }, worker)).status, 404);
   assert.equal((await post(app, shopPath(selection.shopId, 'payment-links'), { ...remoteSelection, email }, worker)).body.checkout.shopId, selection.shopId);
 });
+
+test('Podmiana linku pozwala opłacić poprawiony wybór, a zweryfikowaną płatność za stary zwraca w całości tylko raz', async (t) => {
+  const app = await startTestApp(t);
+  const { body: offer } = await app.request('/api/offer');
+  const selection = app.selection(offer);
+  const { body: original } = await send(app, selection);
+  const startPayment = async (link) => {
+    const { body: { termsVersion } } = await app.request('/api' + link.checkoutUrl);
+    const payment = await post(app, '/api/checkouts/' + link.checkout.id + '/payment', {
+      riderHeights: [176], acceptedTerms: true, termsVersion,
+    });
+    assert.equal(payment.status, 200);
+    return payment.body.paymentUrl.split('/').at(-1);
+  };
+  const notify = (paymentId) => post(app, '/api/payment-notifications', { paymentId });
+  const simulator = (paymentId) => '/api/simulator/payments/' + paymentId;
+  const originalPayment = await startPayment(original);
+  assert.equal((await post(app, simulator(originalPayment) + '/pay', {})).body.status, 'paid');
+  app.advance(2);
+
+  const path = shopPath(selection.shopId, 'payment-links/' + original.checkout.id + '/replace');
+  const corrected = {
+    ...selection, slotId: '2027-01-15T15:00:00.000Z', returnAt: '2027-01-15T16:30:00.000Z',
+    email, requestId: randomUUID(),
+  };
+  const replacement = await post(app, path, corrected, staff);
+  assert.equal(replacement.status, 201);
+  assert.notEqual(replacement.body.checkoutUrl, original.checkoutUrl);
+  assert.ok(replacement.body.message.content.includes(replacement.body.checkoutUrl));
+  assert.equal(replacement.body.checkout.expiresAt, '2027-01-15T13:20:00.000Z');
+  assert.equal(replacement.body.checkout.total, 4000);
+  assert.deepEqual(await post(app, path, corrected, staff), replacement);
+  assert.equal((await post(app, path, { ...corrected, requestId: randomUUID() }, staff)).status, 409);
+
+  const former = await app.request('/api' + original.checkoutUrl);
+  assert.equal(former.body.status, 'replaced');
+  assert.equal(former.body.paymentUrl, undefined);
+  assert.equal((await post(app, '/api/checkouts/' + original.checkout.id + '/payment', {})).body.status, 'replaced');
+  assert.ok((await app.request('/api/offer')).body.slots.some(({ id }) => id === selection.slotId));
+
+  const newPayment = await startPayment(replacement.body);
+  assert.equal((await post(app, simulator(newPayment) + '/pay', {})).body.status, 'paid');
+  const [refund, confirmed, retry] = await Promise.all([
+    notify(originalPayment), notify(newPayment), notify(originalPayment),
+  ]);
+  assert.equal(refund.body.status, 'refund_started');
+  assert.deepEqual(retry, refund);
+  assert.deepEqual(await notify(originalPayment), refund);
+  assert.equal(confirmed.body.status, 'confirmed');
+  assert.deepEqual(await notify(newPayment), confirmed);
+  assert.deepEqual((await app.request(simulator(originalPayment))).body.refund, { id: refund.body.refundId, amount: 2000 });
+  assert.equal((await app.request('/api/checkouts/' + original.checkout.id + '/payment-failure')).body.to, email);
+  const { body: bookings } = await app.request('/api/staff/bookings', { headers: staff });
+  assert.deepEqual(bookings.map(({ id, pickupAt, total }) => [id, pickupAt, total]),
+    [[confirmed.body.bookingId, corrected.slotId, 4000]]);
+});
+
+test('Korekta i widżet rywalizują o zapas, a przegrana korekta zachowuje stary link i blokadę', async (t) => {
+  const app = await startTestApp(t);
+  const { body: offer } = await app.request('/api/offer');
+  const selection = { ...app.selection(offer), returnAt: '2027-01-15T14:30:00.000Z' };
+  const { body: original } = await send(app, selection);
+  const path = shopPath(selection.shopId, 'payment-links/' + original.checkout.id + '/replace');
+  const corrected = { ...selection, returnAt: '2027-01-15T15:00:00.000Z', email };
+  const rival = { ...selection, slotId: selection.returnAt, returnAt: corrected.returnAt };
+  const checkoutPath = '/api' + original.checkoutUrl;
+  const replaceOffer = new URLSearchParams({ pickupAt: selection.slotId, replacing: original.checkout.id });
+  const preview = await app.request(shopPath(selection.shopId, 'assisted-offer?' + replaceOffer), { headers: staff });
+  assert.ok(preview.body.slots.some(({ returnAt }) => returnAt === corrected.returnAt));
+  assert.equal((await post(app, path, { ...corrected, items: [{ itemId: selection.categoryId, quantity: 2 }] }, staff)).status, 409);
+  assert.equal((await app.request(checkoutPath)).body.status, 'held');
+  assert.equal((await post(app, '/api/checkouts', selection)).status, 409);
+
+  const [replacement, widget] = await Promise.all([
+    post(app, path, corrected, staff),
+    post(app, '/api/checkouts', rival),
+  ]);
+  assert.deepEqual([replacement.status, widget.status].sort(), [201, 409]);
+  const listPath = shopPath(selection.shopId, 'payment-links');
+  const { body: links } = await app.request(listPath, { headers: staff });
+  if (replacement.status === 409) {
+    const { body: active } = await app.request(checkoutPath);
+    assert.equal(active.status, 'held');
+    assert.equal(active.expiresAt, original.checkout.expiresAt);
+    assert.deepEqual(links.map(({ id }) => id), [original.checkout.id]);
+    const pay = await post(app, '/api/checkouts/' + active.id + '/payment', {
+      riderHeights: [175], acceptedTerms: true, termsVersion: active.termsVersion,
+    });
+    assert.equal(pay.body.status, 'payment');
+  } else {
+    assert.equal((await app.request(checkoutPath)).body.status, 'replaced');
+    assert.deepEqual(links.map(({ id }) => id), [replacement.body.checkout.id]);
+  }
+  assert.equal((await post(app, '/api/checkouts', selection)).status, 409);
+});
