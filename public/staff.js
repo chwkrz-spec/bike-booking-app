@@ -9,6 +9,7 @@ const dayNames = {
 };
 const shopSelect = get('staff-shop');
 const shopForm = get('shop-settings');
+const copyShopForm = get('copy-shop-configuration');
 const partnerForm = get('partner-settings');
 const policyForm = get('cancellation-policy');
 const policyPath = '/api/staff/cancellation-policy';
@@ -138,6 +139,12 @@ async function refreshShop() {
     get('staff-stock').replaceChildren(...stockForms(stock, staffShopPath('stock'), saves, refreshShop));
     get('staff-catalog').replaceChildren(...catalogForms(catalog, catalogPath, saves, refreshShop));
     displaySettings(settings);
+    if (owner) {
+      const sources = Array.from(shopSelect.options).filter(({ value }) => value !== shopSelect.value);
+      copyShopForm.elements.sourceShopId.replaceChildren(new Option('Wybierz punkt', ''),
+        ...sources.map(({ text, value }) => new Option(text, value)));
+      copyShopForm.hidden = sources.length === 0;
+    }
     get('shop-admin').hidden = false;
   } catch (error) {
     if (selected === viewingShop) showError(error);
@@ -197,6 +204,11 @@ function saves(form, callback) {
   });
 }
 
+saves(copyShopForm, async () => {
+  await request(staffShopPath('copy-configuration'), formValues(copyShopForm));
+  await refreshShop();
+  return 'Skopiowano konfigurację punktu.';
+});
 saves(shopForm, async () => {
   const { minimumNoticeMinutes, bookingHorizonMinutes, maxRentalMinutes, turnaroundBufferMinutes } = formValues(shopForm);
   const settings = { minimumNoticeMinutes: Number(minimumNoticeMinutes) };

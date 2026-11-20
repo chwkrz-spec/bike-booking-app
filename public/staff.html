@@ -42,6 +42,12 @@
         <summary>Oferta i cennik</summary>
         <div id="staff-catalog"></div>
       </details>
+      <form id="copy-shop-configuration" hidden>
+        <label for="source-shop">Punkt źródłowy</label>
+        <select id="source-shop" name="sourceShopId" required aria-describedby="copy-shop-hint"></select>
+        <p id="copy-shop-hint" class="hint">Kopia zastąpi ustawienia i cennik wspólnych pozycji. Punkt zachowa własne ilości sprzętu, a nowe pozycje zaczną od zera.</p>
+        <button type="submit" class="secondary">Skopiuj konfigurację</button>
+      </form>
       <form id="shop-settings">
         <label for="minimum-notice">Minimalne wyprzedzenie (minuty)</label>
         <input id="minimum-notice" name="minimumNoticeMinutes" type="number" min="0" required>
