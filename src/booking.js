@@ -10,6 +10,7 @@ import { openBookingCancellations } from './booking-cancellations.js';
 import { openCancellationPolicies } from './cancellation-policy.js';
 import { openRefunds } from './refunds.js';
 import { category } from './catalog.js';
+import { openOwnerDashboard } from './owner-dashboard.js';
 import { OperationError } from './operation-error.js';
 import { createPaymentSimulator } from './payment-simulator.js';
 import { openShopManagement } from './shop-management.js';
@@ -310,8 +311,8 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     return current;
   }
 
-  function transaction(operation) {
-    db.exec('BEGIN IMMEDIATE');
+  function transaction(operation, { readOnly = false } = {}) {
+    db.exec(readOnly ? 'BEGIN' : 'BEGIN IMMEDIATE');
     try {
       const result = operation();
       db.exec('COMMIT');
@@ -525,7 +526,22 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     };
   }
 
+  const ownerDashboard = openOwnerDashboard(db, {
+    management, refunds, now,
+    bookingsFor: (shopId) => listBookings.all(shopId).map((saved) => {
+      const row = amendedBooking(saved);
+      return {
+        id: row.booking_id, status: row.status,
+        channel: assisted.get(row.id) ? 'staff' : 'widget',
+        pickupAt: row.pickup_at, returnAt: row.return_at,
+        assigned: Boolean(row.assigned_items), returned: row.returned_at !== null,
+        items: allocatedItems(row),
+      };
+    }),
+  });
+
   return {
+    ownerDashboard: (actor, filters) => transaction(() => ownerDashboard(actor, filters), { readOnly: true }),
     management,
     cancellationPolicy: (actor, input) => transaction(() => policies.settings(actor, input)),
     renterBooking: cancellations.renterView,

@@ -15,6 +15,8 @@ const assets = new Map([
   ['/assets/payment.js', ['payment.js', 'text/javascript']],
   ['/assets/booking.js', ['booking.js', 'text/javascript']],
   ['/assets/staff.js', ['staff.js', 'text/javascript']],
+  ['/assets/owner-dashboard.js', ['owner-dashboard.js', 'text/javascript']],
+  ['/assets/owner-dashboard.css', ['owner-dashboard.css', 'text/css']],
   ['/assets/staff-amendments.js', ['staff-amendments.js', 'text/javascript']],
   ['/assets/staff-assisted.js', ['staff-assisted.js', 'text/javascript']],
   ['/assets/staff-checkout.js', ['staff-checkout.js', 'text/javascript']],
@@ -81,14 +83,21 @@ export function createApp({
       const method = request.method;
       const checkout = path.match(/^\/api\/checkouts\/([\w-]+)$/);
 
-      if (path === '/staff' || path.startsWith('/api/staff/')) {
+      if (path === '/staff' || path === '/staff/owner-dashboard' || path.startsWith('/api/staff/')) {
         const actor = management.authenticate(request.headers.authorization);
         if (!actor) {
           response.setHeader('WWW-Authenticate', 'Basic realm="Panel pokazowy"');
           return json(response, 401, { error: 'Wymagane logowanie obsługi.' });
         }
         if (method === 'GET' && path === '/staff') return await file(response, 'staff.html');
+        if (method === 'GET' && path === '/staff/owner-dashboard') {
+          if (actor.role !== 'owner') throw new OperationError(403, 'Brak uprawnień do panelu właściciela.');
+          return await file(response, 'owner-dashboard.html');
+        }
         if (path === '/api/staff/session' && method === 'GET') return json(response, 200, { role: actor.role });
+        if (path === '/api/staff/owner-dashboard' && method === 'GET') {
+          return json(response, 200, booking.ownerDashboard(actor, Object.fromEntries(url.searchParams)));
+        }
         if (path === '/api/staff/bookings' && method === 'GET') {
           return json(response, 200, booking.staffBookings(actor));
         }

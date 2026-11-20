@@ -268,6 +268,7 @@ assignmentForm.elements.assigned.addEventListener('change', () => {
 try {
   const session = await request('/api/staff/session');
   owner = session.role === 'owner';
+  get('owner-dashboard-link').hidden = !owner;
   for (const id of ['owner-schedule', 'owner-catalog', 'partner-admin', 'policy-admin', 'member-admin']) get(id).hidden = !owner;
   await refreshShops();
   if (owner) {
