@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { bookingCalendar } from './booking-calendar.js';
 import { sameItems, selectionItems, stockForPeriod } from './cart.js';
@@ -10,6 +10,7 @@ import { category } from './catalog.js';
 import { OperationError } from './operation-error.js';
 import { createPaymentSimulator } from './payment-simulator.js';
 import { openShopManagement } from './shop-management.js';
+import { openCheckoutResumes } from './checkout-resume.js';
 import { openWidgets } from './widgets.js';
 
 const holdDuration = 15 * 60 * 1000;
@@ -40,6 +41,10 @@ function savedItems(row) {
   return row.items ? JSON.parse(row.items) : [{
     itemId: row.category_id, name: category.name, kind: 'bike', quantity: 1, unitTotal: row.total,
   }];
+}
+
+function bikeCount(row) {
+  return savedItems(row).filter(({ kind }) => kind === 'bike').reduce((count, item) => count + item.quantity, 0);
 }
 
 function checkoutSummary(row, now, payment) {
@@ -134,6 +139,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
   const refunds = openRefunds(db);
   const simulator = createPaymentSimulator(db, refunds);
   const policies = openCancellationPolicies(db, management);
+  const resumes = openCheckoutResumes(db);
 
   function describeCheckout(row, time, payment) {
     const summary = checkoutSummary(row, time, payment);
@@ -295,6 +301,34 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     }
   }
 
+  function resumeState(session, time) {
+    const row = checkout(session.current_checkout_id);
+    const payment = checkoutPayment.get(row.id);
+    const summary = describeCheckout(row, time, payment);
+    const { shop, settings } = management.publicShop(row.shop_id);
+    const draft = JSON.parse(session.draft);
+    const view = { checkout: summary, draft, shop };
+    if (['payment', 'expired'].includes(summary.status) && payment && simulator.verify(payment.id)) {
+      return { ...view, checkout: { ...summary, status: 'processing' } };
+    }
+    if (summary.status !== 'expired') return view;
+    const calendar = bookingCalendar(settings, time);
+    const slot = calendar.selection(summary.pickupAt, summary.returnAt);
+    const inventory = management.inventory(row.shop_id);
+    const selected = savedItems(row);
+    const quantities = slot && availability(row.shop_id, inventory, time, settings.turnaroundBufferMinutes)(slot);
+    if (!slot || !available(selected, quantities)) {
+      return { ...view, checkout: { ...summary, status: 'unavailable', reason: 'Wybrany termin lub sprzęt nie jest już dostępny.' } };
+    }
+    const items = selected.map((item) => ({
+      ...item, name: inventory.find(({ id }) => id === item.itemId).name,
+    }));
+    const cart = pricingForPickup(calendar, slot.pickupAt, inventory).cart(slot.returnAt, items);
+    const total = cart.reduce((sum, item) => sum + item.quantity * item.unitTotal, 0);
+    const quoteVersion = createHash('sha256').update(JSON.stringify({ id: row.id, cart })).digest('hex');
+    return { ...view, checkout: { ...summary, items: cart, total, quoteVersion, status: 'reconfirm' } };
+  }
+
   function pickupAssignment(row) {
     return row.assigned_items ? {
       items: JSON.parse(row.assigned_items),
@@ -419,6 +453,49 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     checkout(id) {
       return describeCheckout(checkout(id), now(), checkoutPayment.get(id));
     },
+    issueResumeLink(id, input) {
+      if (typeof input.requestId !== 'string' || !uuid.test(input.requestId)) {
+        throw new OperationError(400, 'Nieprawidłowy identyfikator wysyłki.');
+      }
+      return transaction(() => {
+        const time = now();
+        const current = checkout(id);
+        if (current.status !== 'held' || current.deadline <= time) {
+          throw new OperationError(409, 'Link można wysłać w trakcie wypełniania formularza.');
+        }
+        return resumes.issue(id, input, bikeCount(current), time);
+      });
+    },
+    resumeCheckout(token) {
+      const time = now();
+      return resumeState(resumes.read(token, time), time);
+    },
+    confirmResumedSelection(token, { quoteVersion }) {
+      return transaction(() => {
+        const time = now();
+        const session = resumes.read(token, time);
+        const view = resumeState(session, time);
+        const current = view.checkout;
+        if (current.status === 'held') return view;
+        if (current.status !== 'reconfirm' || quoteVersion !== current.quoteVersion) {
+          throw new OperationError(409, 'Dostępność lub cena uległa zmianie. Sprawdź aktualną ofertę.');
+        }
+        const id = randomUUID();
+        insertCheckout.run(id, null, current.shopId, current.categoryId, Date.parse(current.pickupAt),
+          Date.parse(current.returnAt), current.total, time + holdDuration);
+        insertCart.run(id, JSON.stringify(current.items));
+        resumes.replace(session.id, id);
+        return resumeState(resumes.read(token, time), time);
+      });
+    },
+    saveResumeDraft(id, input) {
+      return transaction(() => {
+        const current = checkout(id);
+        if (current.status !== 'held' || current.deadline <= now()) return { saved: false };
+        resumes.save(id, input, bikeCount(current));
+        return { saved: true };
+      });
+    },
     startPayment(id, input) {
       return transaction(() => {
         const time = now();
@@ -428,13 +505,13 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         if (current.deadline <= time) throw new OperationError(409, 'Blokada wygasła. Wybierz termin ponownie.');
         if (payment) return describeCheckout(current, time, payment);
 
-        const bikeCount = savedItems(current).reduce((count, item) => count + (item.kind === 'bike' ? item.quantity : 0), 0);
-        const { email, phone, riderHeights } = renterDetails(input, bikeCount);
+        const { email, phone, riderHeights } = renterDetails(input, bikeCount(current));
         const terms = policies.accept(current, input.termsVersion);
         const paymentId = randomUUID();
         insertPayment.run(paymentId, id);
         startPayment.run(time + holdDuration, email, phone, riderHeights[0], terms, time, id);
         recordHeights.run(JSON.stringify(riderHeights), id);
+        resumes.save(id, { ...input, email, phone, riderHeights }, bikeCount(current));
         return describeCheckout(checkout(id), time, { id: paymentId });
       });
     },

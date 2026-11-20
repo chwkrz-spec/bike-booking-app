@@ -3,11 +3,13 @@ import { formatAmount, formatInstant, formatSlot, get, request, showError, start
 import { openWidgetContext } from './widget-context.js';
 
 const widget = openWidgetContext();
-const scope = widget.scope;
+const resumeToken = location.pathname.match(/^\/checkout-resume\/([\w-]+)$/)?.[1];
+const resumeApi = resumeToken && '/api/checkout-resume/' + resumeToken;
+const scope = resumeApi ?? widget.scope;
 const checkoutKey = 'bike-checkout' + scope;
 const attemptKey = 'bike-selection-attempt' + scope;
 const draftKey = 'bike-checkout-draft' + scope;
-const steps = ['selection', 'details', 'payment-pending', 'confirmation'];
+const steps = ['selection', 'details', 'resume-reconfirm', 'payment-pending', 'confirmation'];
 
 let offer;
 let returns = [];
@@ -19,12 +21,16 @@ let pendingRefresh;
 let stopCountdown = () => {};
 let refreshing = false;
 let shownTermsVersion;
+let pendingQuote;
+let resumeActive = Boolean(resumeApi || widget.storage.getItem('bike-resume-sent' + scope));
+let sendAttempt;
+let draftTimer;
 
 function showStep(step) {
   for (const id of steps) get(id).hidden = id !== step;
   get('loading').hidden = true;
   widget.showPicker(step === 'selection');
-  get('checkout-summary').hidden = !['details', 'payment-pending', 'confirmation'].includes(step);
+  get('checkout-summary').hidden = !['details', 'resume-reconfirm', 'payment-pending', 'confirmation'].includes(step);
 }
 
 function currentSlot() {
@@ -115,13 +121,17 @@ async function loadReturns() {
   }
 }
 
+function renderSeller(shop) {
+  get('shop-name').textContent = shop.name;
+  get('legal-name').textContent = shop.seller.legalName;
+  get('seller-address').textContent = shop.seller.address;
+  get('seller-nip').textContent = 'NIP ' + shop.seller.nip;
+  get('seller').hidden = false;
+}
+
 async function selection() {
   offer = await request(offerPath());
-  get('shop-name').textContent = offer.shop.name;
-  get('legal-name').textContent = offer.shop.seller.legalName;
-  get('seller-address').textContent = offer.shop.seller.address;
-  get('seller-nip').textContent = 'NIP ' + offer.shop.seller.nip;
-  get('seller').hidden = false;
+  renderSeller(offer.shop);
   buildQuantities();
   get('slot').replaceChildren(...offer.slots.map((slot) => new Option(formatInstant(slot.pickupAt), slot.id)));
   await loadReturns();
@@ -132,7 +142,7 @@ function details() {
   return {
     email: values.get('email'),
     phone: values.get('phone'),
-    riderHeights: values.getAll('riderHeight').map(Number),
+    riderHeights: values.getAll('riderHeight').map((value) => value ? Number(value) : null),
     acceptedTerms: values.has('acceptedTerms'),
     termsVersion: shownTermsVersion,
   };
@@ -174,6 +184,12 @@ function clearCheckout() {
   widget.storage.removeItem(checkoutKey);
   widget.storage.removeItem(attemptKey);
   widget.storage.removeItem(draftKey);
+  widget.storage.removeItem('bike-resume-sent' + scope);
+  clearTimeout(draftTimer);
+  resumeActive = false;
+  sendAttempt = undefined;
+  get('resume-sent').hidden = true;
+  get('resume-message-link').hidden = true;
   get('details').reset();
 }
 
@@ -183,13 +199,23 @@ async function showCheckout(checkout) {
   const summary = checkout.items.map(({ name, quantity }) => name + ' × ' + quantity).join(', ');
   get('selected-slot').textContent = summary + ' · ' + formatSlot(checkout);
   get('checkout-total').textContent = formatAmount(checkout.total, checkout.currency);
-  if (checkout.status === 'expired' || checkout.status === 'refund_started') {
+  if (checkout.status === 'reconfirm') {
+    pendingQuote = checkout.quoteVersion;
+    showStep('resume-reconfirm');
+  } else if (checkout.status === 'unavailable') {
+    showStep(null);
+    showError(new Error(checkout.reason));
+  } else if (checkout.status === 'expired' || checkout.status === 'refund_started') {
     const message = checkout.status === 'refund_started'
       ? (await request('/api/checkouts/' + checkout.id + '/payment-failure')).content
       : 'Blokada wygasła. Wybierz termin ponownie.';
-    clearCheckout();
-    await selection();
-    showStep('selection');
+    if (resumeApi) {
+      showStep(null);
+    } else {
+      clearCheckout();
+      await selection();
+      showStep('selection');
+    }
     showError(new Error(message));
   } else if (['confirmed', 'cancelled', 'no_show'].includes(checkout.status)) {
     const message = await request('/api/checkouts/' + checkout.id + '/confirmation');
@@ -199,10 +225,14 @@ async function showCheckout(checkout) {
     get('booking-number').textContent = 'Numer rezerwacji ' + message.bookingId;
     get('confirmation-email').textContent = message.to;
     showStep('confirmation');
-  } else if (checkout.status === 'payment') {
+  } else if (['payment', 'processing'].includes(checkout.status)) {
+    const processing = checkout.status === 'processing';
+    const deadline = get('widget-payment-deadline');
     get('reopen-payment').href = checkout.paymentUrl;
+    get('reopen-payment').hidden = processing;
+    deadline.parentElement.hidden = processing;
     showStep('payment-pending');
-    stopCountdown = startCountdown(get('widget-payment-deadline'), checkout, refresh);
+    if (!processing) stopCountdown = startCountdown(deadline, checkout, refresh);
     pendingRefresh = setInterval(refresh, 1500);
   } else {
     renderHeightFields(checkout.items);
@@ -214,12 +244,25 @@ async function showCheckout(checkout) {
   }
 }
 
+async function showResumed({ checkout, draft, shop }) {
+  activeId = checkout.id;
+  widget.storage.setItem(draftKey, JSON.stringify(draft));
+  renderSeller(shop);
+  await showCheckout(checkout);
+}
+
 async function refresh() {
-  if (!activeId || refreshing) return;
+  if ((!activeId && !resumeApi) || refreshing) return;
   refreshing = true;
   try {
-    await showCheckout(await request('/api/checkouts/' + activeId));
+    if (resumeApi) await showResumed(await request(resumeApi));
+    else await showCheckout(await request('/api/checkouts/' + activeId));
   } catch (error) {
+    if (resumeApi && error.status === 410) {
+      stopCountdown();
+      clearInterval(pendingRefresh);
+      showStep(null);
+    }
     showError(error);
   } finally {
     refreshing = false;
@@ -291,7 +334,49 @@ get('selection').addEventListener('submit', async (event) => {
 });
 
 get('details').addEventListener('input', () => {
-  widget.storage.setItem(draftKey, JSON.stringify(details()));
+  const draft = details();
+  widget.storage.setItem(draftKey, JSON.stringify(draft));
+  if (!resumeActive || !activeId) return;
+  const id = activeId;
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => request('/api/checkouts/' + id + '/resume-draft', draft).catch(showError), 250);
+});
+
+get('send-resume').addEventListener('click', async (event) => {
+  const email = get('email');
+  if (!email.reportValidity()) return;
+  const button = event.currentTarget;
+  button.disabled = true;
+  get('error').hidden = true;
+  try {
+    const draft = details();
+    if (sendAttempt?.email !== draft.email) sendAttempt = { email: draft.email, requestId: crypto.randomUUID() };
+    const message = await request('/api/checkouts/' + activeId + '/resume-link', { ...draft, requestId: sendAttempt.requestId });
+    resumeActive = true;
+    widget.storage.setItem('bike-resume-sent' + scope, 'yes');
+    get('resume-sent').hidden = false;
+    get('resume-message-link').href = message.resumeUrl;
+    get('resume-message-link').hidden = false;
+    sendAttempt = undefined;
+  } catch (error) {
+    showError(error);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+get('resume-confirm').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  get('error').hidden = true;
+  try {
+    await showResumed(await request(resumeApi + '/confirm', { quoteVersion: pendingQuote }));
+  } catch (error) {
+    if (error.status === 409) await refresh();
+    showError(error);
+  } finally {
+    button.disabled = false;
+  }
 });
 
 get('details').addEventListener('submit', async (event) => {
@@ -316,6 +401,10 @@ get('details').addEventListener('submit', async (event) => {
 });
 
 get('new-booking').addEventListener('click', async () => {
+  if (resumeApi) {
+    window.location.assign('/');
+    return;
+  }
   clearCheckout();
   try {
     await selection();
@@ -326,12 +415,16 @@ get('new-booking').addEventListener('click', async () => {
 });
 
 try {
-  await widget.load();
-  await selection();
-  const attempt = savedAttempt();
-  if (activeId) await refresh();
-  else if (attempt) await confirmSelection(attempt);
-  else showStep('selection');
+  if (resumeApi) {
+    await showResumed(await request(resumeApi));
+  } else {
+    await widget.load();
+    await selection();
+    const attempt = savedAttempt();
+    if (activeId) await refresh();
+    else if (attempt) await confirmSelection(attempt);
+    else showStep('selection');
+  }
 } catch (error) {
   get('loading').hidden = true;
   showError(error);

@@ -183,6 +183,22 @@ export function createApp({
         return json(response, 200, booking.reconcilePayment((await body(request)).paymentId));
       }
 
+      const resumeLink = path.match(/^\/api\/checkouts\/([\w-]+)\/resume-link$/);
+      if (method === 'POST' && resumeLink) {
+        return json(response, 201, booking.issueResumeLink(resumeLink[1], await body(request)));
+      }
+      const resumeCheckout = path.match(/^\/api\/checkout-resume\/([\w-]+)(\/confirm)?$/);
+      if (method === 'GET' && resumeCheckout && !resumeCheckout[2]) {
+        return json(response, 200, booking.resumeCheckout(resumeCheckout[1]));
+      }
+      if (method === 'POST' && resumeCheckout?.[2]) {
+        return json(response, 200, booking.confirmResumedSelection(resumeCheckout[1], await body(request)));
+      }
+      const resumeDraft = path.match(/^\/api\/checkouts\/([\w-]+)\/resume-draft$/);
+      if (method === 'POST' && resumeDraft) {
+        return json(response, 200, booking.saveResumeDraft(resumeDraft[1], await body(request)));
+      }
+
       const payment = path.match(/^\/api\/checkouts\/([\w-]+)\/payment$/);
       if (method === 'POST' && payment) return json(response, 200, booking.startPayment(payment[1], await body(request)));
       const widgetConfig = path.match(/^\/api\/widgets\/([\w-]+)$/);
@@ -213,6 +229,7 @@ export function createApp({
         widgets.published(widgetId, widgetMode);
         return await file(response, 'widget.html', 'text/html', { widgetMode });
       }
+      if (method === 'GET' && /^\/checkout-resume\/[\w-]+$/.test(path)) return await file(response, 'widget.html');
       if (method === 'GET' && path === '/') return await file(response, 'widget.html');
       if (method === 'GET' && /^\/payment-simulator\/[\w-]+$/.test(path)) return await file(response, 'payment.html');
       if (method === 'GET' && assets.has(path)) return await file(response, ...assets.get(path));

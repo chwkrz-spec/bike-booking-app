@@ -7,6 +7,7 @@ const defaults = { freeCancellationMinutes: 1440, lateRefundPercent: 50, noShowG
 function termsText(shopTerms, policy) {
   return [
     shopTerms,
+    'Nieopłacony sprzęt wraca do puli po zakończeniu blokady wyświetlonej w formularzu lub okna rozpoczętej płatności. Prywatny link do dokończenia rezerwacji działa przez 24 godziny od wysłania i nie przedłuża blokady.',
     'Całą rezerwację możesz anulować przez prywatny link w potwierdzeniu lub kontaktując się ze sprzedawcą.',
     'Jeśli do odbioru pozostało więcej niż ' + policy.freeCancellationMinutes + ' min, otrzymasz 100% przedpłaty. Przy krótszym czasie lub dokładnie na granicy zwrot wynosi ' + policy.lateRefundPercent + '%.',
     'W razie nieodebrania sprzętu po ' + policy.noShowGraceMinutes + ' min od terminu odbioru przedpłata nie podlega zwrotowi.',
