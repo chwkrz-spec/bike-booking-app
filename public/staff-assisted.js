@@ -2,6 +2,8 @@ import { formatAmount, formatInstant, get, request, showError } from './common.j
 
 export function setupAssistedBooking(saves) {
   const section = get('assisted-booking');
+  const linkToReplace = get('staff-link-to-replace');
+  const language = get('staff-checkout-language');
   const form = get('staff-payment-link');
   const pickup = get('staff-pickup');
   const returns = get('staff-return');
@@ -11,6 +13,7 @@ export function setupAssistedBooking(saves) {
   const submit = form.querySelector('button');
   let shopPath;
   let offer;
+  let links = [];
   let slots = [];
   let inputs = [];
   let requestId;
@@ -68,7 +71,14 @@ export function setupAssistedBooking(saves) {
     quantities.replaceChildren(...inputs.map(({ row }) => row));
   }
 
-  async function loadReturns() {
+  function offerPath(pickupAt) {
+    const params = new URLSearchParams();
+    if (linkToReplace.value) params.set('replacing', linkToReplace.value);
+    if (pickupAt) params.set('pickupAt', pickupAt);
+    return shopPath + '/assisted-offer?' + params;
+  }
+
+  async function loadReturns(preferredReturn) {
     const current = ++version;
     const pickupAt = pickup.value;
     slots = [];
@@ -77,7 +87,7 @@ export function setupAssistedBooking(saves) {
     showPrice();
     if (pickupAt) {
       try {
-        const result = await request(shopPath + '/assisted-offer?pickupAt=' + encodeURIComponent(pickupAt));
+        const result = await request(offerPath(pickupAt));
         if (current !== version) return;
         slots = result.slots;
       } catch (error) {
@@ -86,12 +96,69 @@ export function setupAssistedBooking(saves) {
       }
     }
     returns.replaceChildren(...slots.map(({ returnAt }) => new Option(formatInstant(returnAt), returnAt)));
+    if (preferredReturn && slots.length > 0) {
+      if (slots.some(({ returnAt }) => returnAt === preferredReturn)) returns.value = preferredReturn;
+      else {
+        returns.prepend(new Option('Wybierz nowy termin zwrotu', ''));
+        returns.value = '';
+      }
+    }
     returns.disabled = slots.length === 0;
-    get('staff-no-slots').hidden = slots.length > 0;
-    form.hidden = pickup.options.length === 0;
+    const hasPickupOptions = pickup.options.length > 0;
+    get('staff-no-slots').hidden = slots.length > 0 || (!pickupAt && hasPickupOptions);
+    form.hidden = !hasPickupOptions;
     showPrice();
   }
 
+  async function loadOffer(original) {
+    const current = ++version;
+    form.hidden = true;
+    get('staff-no-slots').hidden = true;
+    try {
+      const result = await request(offerPath());
+      if (current !== version) return;
+      offer = result;
+      form.reset();
+      equipmentInputs(offer.equipment);
+      pickup.replaceChildren(...offer.slots.map(({ pickupAt }) => new Option(formatInstant(pickupAt), pickupAt)));
+      language.replaceChildren(...offer.languages.map((value) => new Option(value === 'en' ? 'Angielski' : 'Polski', value)));
+      get('staff-language-controls').hidden = offer.languages.length < 2;
+      submit.textContent = original ? 'Wyślij poprawiony link' : 'Wyślij link do płatności';
+      if (original) {
+        if (offer.slots.some(({ pickupAt }) => pickupAt === original.pickupAt)) pickup.value = original.pickupAt;
+        else if (offer.slots.length > 0) {
+          pickup.prepend(new Option('Wybierz nowy termin odbioru', ''));
+          pickup.value = '';
+        }
+        recipient.value = original.email;
+        if (offer.languages.includes(original.language)) language.value = original.language;
+        for (const { itemId, input } of inputs) {
+          input.value = original.items.find((item) => item.itemId === itemId)?.quantity ?? 0;
+        }
+      }
+      await loadReturns(original?.returnAt);
+    } catch (error) {
+      if (current === version) showError(error);
+    }
+  }
+
+  async function loadLinks() {
+    const current = ++version;
+    const result = await request(shopPath + '/payment-links');
+    if (current !== version) return false;
+    links = result;
+    linkToReplace.replaceChildren(new Option('Nowa rezerwacja', ''), ...links.map((link) => {
+      const status = link.status === 'expired' ? ' · Termin płatności minął' : '';
+      return new Option(formatInstant(link.pickupAt) + ' · ' + link.email + status, link.id);
+    }));
+    get('staff-link-controls').hidden = links.length === 0;
+    return true;
+  }
+
+  linkToReplace.addEventListener('change', () => {
+    clearMessage();
+    loadOffer(links.find(({ id }) => id === linkToReplace.value));
+  });
   pickup.addEventListener('change', () => {
     clearMessage();
     loadReturns();
@@ -105,38 +172,41 @@ export function setupAssistedBooking(saves) {
     showPrice();
   });
   recipient.addEventListener('input', clearMessage);
+  language.addEventListener('change', clearMessage);
 
   saves(form, async () => {
     const selected = selection();
     if (!selected) return;
     const current = requestId ??= crypto.randomUUID();
-    const result = await request(shopPath + '/payment-links', {
-      requestId, slotId: pickup.value, returnAt: returns.value, items: selected.items, email: recipient.value,
+    const replacingId = linkToReplace.value;
+    const path = shopPath + '/payment-links' + (replacingId ? '/' + replacingId + '/replace' : '');
+    const result = await request(path, {
+      requestId, slotId: pickup.value, returnAt: returns.value, items: selected.items,
+      email: recipient.value, language: language.value,
     });
     if (current !== requestId) return;
     get('staff-message-recipient').textContent = result.message.to + ' · ' + result.message.subject;
     get('staff-message-content').textContent = result.message.content;
     get('staff-message-link').href = result.checkoutUrl;
     message.hidden = false;
-    return 'Wysłano link do płatności w symulatorze.';
+    if (await loadLinks()) await loadOffer();
+    if (current !== requestId) return;
+    requestId = undefined;
+    return replacingId ? 'Wysłano poprawiony link do płatności w symulatorze.' : 'Wysłano link do płatności w symulatorze.';
   });
 
   return async function refreshAssistedBooking(shopId) {
-    const current = ++version;
+    ++version;
     section.hidden = true;
     clearMessage();
     if (!shopId) return;
     shopPath = '/api/staff/shops/' + shopId;
     try {
-      offer = await request(shopPath + '/assisted-offer');
-      if (current !== version) return;
-      form.reset();
-      equipmentInputs(offer.equipment);
-      pickup.replaceChildren(...offer.slots.map(({ pickupAt }) => new Option(formatInstant(pickupAt), pickupAt)));
-      await loadReturns();
-      if (current + 1 === version) section.hidden = false;
+      if (!await loadLinks()) return;
+      section.hidden = false;
+      await loadOffer();
     } catch (error) {
-      if (current === version) showError(error);
+      showError(error);
     }
   };
 }

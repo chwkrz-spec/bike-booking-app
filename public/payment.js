@@ -20,6 +20,7 @@ function showStatus(checkout) {
   } else {
     const messages = {
       confirmed: 'Płatność zweryfikowana',
+      replaced: 'Ten link do płatności został zastąpiony. Użyj ostatniego linku od obsługi.',
       cancelled: 'Rezerwacja anulowana.',
       no_show: 'Sprzęt nieodebrany.',
       refund_started: 'Nie możemy zrealizować Twojej rezerwacji. Zleciliśmy pełny zwrot płatności.',

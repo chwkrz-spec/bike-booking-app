@@ -39,3 +39,46 @@ test('Obsługa wysyła link, a gość potwierdza rezerwację w tym samym oknie c
   await staff.getByRole('button', { name: 'Odśwież rezerwacje' }).click();
   await staff.getByRole('cell').filter({ hasText: '178 cm' }).waitFor();
 });
+
+test('Obsługa poprawia wysłany link w panelu, a klient może zapłacić przez aktualny link', async (t) => {
+  const app = await startTestApp(t);
+  const browser = await chromium.launch();
+  t.after(() => browser.close());
+  const staff = await browser.newPage({ httpCredentials: { username: 'obsluga', password: 'showcase-credentials' } });
+  staff.setDefaultTimeout(5000);
+  await staff.goto(app.origin + '/staff');
+  const form = staff.getByRole('region', { name: 'Rezerwacja przygotowana przez obsługę' });
+  await form.getByLabel('Termin odbioru').selectOption('2027-01-15T14:00:00.000Z');
+  await form.getByLabel('Termin zwrotu').selectOption('2027-01-15T15:30:00.000Z');
+  await form.getByLabel('Rower turystyczny').fill('1');
+  await form.getByLabel('Adres e-mail klienta').fill('korekta@example.test');
+  await form.getByRole('button', { name: 'Wyślij link do płatności' }).click();
+  const link = form.getByRole('link', { name: 'Otwórz prywatny link' });
+  await link.waitFor();
+  const originalUrl = await link.getAttribute('href');
+
+  await staff.reload();
+  await form.getByLabel('Link do poprawienia').selectOption(originalUrl.split('/').at(-1));
+  await form.getByText('40,00 PLN').waitFor();
+  assert.equal(await form.getByLabel('Adres e-mail klienta').inputValue(), 'korekta@example.test');
+  await form.getByLabel('Termin zwrotu').selectOption('2027-01-15T16:30:00.000Z');
+  await form.getByText('60,00 PLN').waitFor();
+  await form.getByRole('button', { name: 'Wyślij poprawiony link' }).click();
+  await link.waitFor();
+  const replacementUrl = await link.getAttribute('href');
+  assert.notEqual(replacementUrl, originalUrl);
+
+  const renter = await browser.newPage();
+  renter.setDefaultTimeout(5000);
+  await renter.goto(app.origin + originalUrl);
+  await renter.getByText('Ten link do płatności został zastąpiony.').waitFor();
+  assert.equal(await renter.getByRole('button', { name: 'Zapłać', exact: true }).count(), 0);
+  await renter.goto(app.origin + replacementUrl);
+  await renter.getByText('60,00 PLN').waitFor();
+  await renter.getByLabel('Wzrost 1. uczestnika').fill('178');
+  await renter.getByLabel('Akceptuję warunki najmu').check();
+  await renter.getByRole('button', { name: 'Zapłać', exact: true }).click();
+  await renter.getByRole('button', { name: 'Zasymuluj płatność' }).click();
+  await renter.getByRole('link', { name: 'Wróć do rezerwacji' }).click();
+  await renter.getByText('Rezerwacja potwierdzona.').waitFor();
+});

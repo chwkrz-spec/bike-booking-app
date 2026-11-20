@@ -30,6 +30,7 @@ async function load() {
   const { shop, status, items, total, currency } = checkout;
   const statuses = {
     payment: 'Płatność została rozpoczęta.',
+    replaced: 'Ten link do płatności został zastąpiony. Użyj ostatniego linku od obsługi.',
     expired: 'Termin płatności minął. Skontaktuj się z punktem, aby przygotować nową rezerwację.',
     confirmed: 'Rezerwacja potwierdzona.',
     refund_started: 'Nie możemy zrealizować Twojej rezerwacji. Zleciliśmy pełny zwrot płatności.',

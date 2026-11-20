@@ -154,10 +154,18 @@ export function createApp({
         }
         const assisted = path.match(/^\/api\/staff\/shops\/([\w-]+)\/(assisted-offer|payment-links)$/);
         if (assisted?.[2] === 'assisted-offer' && method === 'GET') {
-          return json(response, 200, booking.staffOffer(actor, assisted[1], url.searchParams.get('pickupAt') ?? undefined));
+          return json(response, 200, booking.staffOffer(actor, assisted[1],
+            url.searchParams.get('pickupAt') ?? undefined, url.searchParams.get('replacing') ?? undefined));
         }
         if (assisted?.[2] === 'payment-links' && method === 'POST') {
           return json(response, 201, booking.sendStaffPaymentLink(actor, assisted[1], await staffBody(request)));
+        }
+        if (assisted?.[2] === 'payment-links' && method === 'GET') {
+          return json(response, 200, booking.staffPaymentLinks(actor, assisted[1]));
+        }
+        const replacement = path.match(/^\/api\/staff\/shops\/([\w-]+)\/payment-links\/([\w-]+)\/replace$/);
+        if (replacement && method === 'POST') {
+          return json(response, 201, booking.sendStaffPaymentLink(actor, replacement[1], await staffBody(request), replacement[2]));
         }
         const shopCopy = path.match(/^\/api\/staff\/shops\/([\w-]+)\/copy-configuration$/);
         if (shopCopy && method === 'POST') {
