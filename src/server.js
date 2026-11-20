@@ -150,6 +150,10 @@ export function createApp({
           if (action === 'return') return json(response, 200, booking.returnEquipment(actor, shopId, bookingId));
           return json(response, 200, booking.markNoShow(actor, shopId, bookingId));
         }
+        const shopCopy = path.match(/^\/api\/staff\/shops\/([\w-]+)\/copy-configuration$/);
+        if (shopCopy && method === 'POST') {
+          return json(response, 200, management.copyConfiguration(actor, shopCopy[1], await staffBody(request)));
+        }
         const shopRoute = path.match(/^\/api\/staff\/shops\/([\w-]+)\/(settings|stock|catalog|bookings)$/);
         if (shopRoute) {
           const [, shopId, resource] = shopRoute;

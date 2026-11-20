@@ -142,7 +142,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     ) STRICT;
     CREATE INDEX IF NOT EXISTS checkout_shop_period ON checkouts(shop_id, return_at);
   `);
-  const management = openShopManagement(db, { staffPassword, demoOwners });
+  const management = openShopManagement(db, { staffPassword, demoOwners, transaction });
   const refunds = openRefunds(db);
   const amendments = openBookingAmendments(db, refunds);
   const simulator = createPaymentSimulator(db, refunds);

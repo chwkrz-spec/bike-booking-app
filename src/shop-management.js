@@ -87,7 +87,7 @@ function requireOwner(actor) {
   if (actor.role !== 'owner') throw forbidden();
 }
 
-export function openShopManagement(db, { staffPassword, demoOwners = [] }) {
+export function openShopManagement(db, { staffPassword, demoOwners = [], transaction }) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS partners (
       id TEXT PRIMARY KEY,
@@ -243,6 +243,22 @@ export function openShopManagement(db, { staffPassword, demoOwners = [] }) {
       const id = randomUUID();
       seedShop.run(id, actor.partnerId, name, shop.terms, JSON.stringify(defaultSettings));
       return { id, name, canRefund: true };
+    },
+    copyConfiguration(actor, shopId, { sourceShopId }) {
+      requireOwner(actor);
+      if (typeof sourceShopId !== 'string' || !sourceShopId) throw badSettings();
+      return transaction(() => {
+        accessible(actor, shopId);
+        const sourceSettings = settings(actor, sourceShopId);
+        if (sourceShopId === shopId) throw new OperationError(400, 'Wybierz inny punkt źródłowy.');
+
+        const configuration = Object.fromEntries(keys.map((key) => [key, sourceSettings[key]]));
+        settings(actor, shopId, configuration);
+        for (const { quantity, ...item } of inventory(sourceShopId)) {
+          upsertEquipment.run(shopId, item.id, JSON.stringify(item));
+        }
+        return { shopId, sourceShopId };
+      });
     },
     inventory,
     catalog(actor, shopId, input) {
