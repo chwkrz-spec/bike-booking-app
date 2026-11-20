@@ -1,7 +1,9 @@
 import { formatAmount, formatInstant, formatSlot, get, request, showError, startCountdown } from './common.js';
 
-const shopId = new URLSearchParams(window.location.search).get('shopId');
-const scope = shopId ? ':' + shopId : '';
+import { openWidgetContext } from './widget-context.js';
+
+const widget = openWidgetContext();
+const scope = widget.scope;
 const checkoutKey = 'bike-checkout' + scope;
 const attemptKey = 'bike-selection-attempt' + scope;
 const draftKey = 'bike-checkout-draft' + scope;
@@ -11,7 +13,7 @@ let offer;
 let returns = [];
 let returnRequest = 0;
 const confirmButton = get('selection').querySelector('button');
-let activeId = sessionStorage.getItem(checkoutKey);
+let activeId = widget.storage.getItem(checkoutKey);
 let pendingRefresh;
 let stopCountdown = () => {};
 let refreshing = false;
@@ -20,6 +22,7 @@ let shownTermsVersion;
 function showStep(step) {
   for (const id of steps) get(id).hidden = id !== step;
   get('loading').hidden = true;
+  widget.showPicker(step === 'selection');
   get('checkout-summary').hidden = !['details', 'payment-pending', 'confirmation'].includes(step);
 }
 
@@ -34,9 +37,9 @@ function showPrice() {
 
 function offerPath(pickupAt) {
   const params = new URLSearchParams();
-  if (shopId) params.set('shopId', shopId);
+  if (widget.shopId) params.set('shopId', widget.shopId);
   if (pickupAt) params.set('pickupAt', pickupAt);
-  return '/api/offer?' + params;
+  return widget.apiPrefix + '/offer?' + params;
 }
 
 async function loadReturns() {
@@ -89,7 +92,7 @@ function details() {
 }
 
 function restoreDraft() {
-  const draft = JSON.parse(sessionStorage.getItem(draftKey) ?? '{}');
+  const draft = JSON.parse(widget.storage.getItem(draftKey) ?? '{}');
   for (const input of get('details').querySelectorAll('input')) {
     if (input.type === 'checkbox') input.checked = Boolean(draft[input.name]) && draft.termsVersion === shownTermsVersion;
     else input.value = draft[input.name] || '';
@@ -98,9 +101,9 @@ function restoreDraft() {
 
 function clearCheckout() {
   activeId = undefined;
-  sessionStorage.removeItem(checkoutKey);
-  sessionStorage.removeItem(attemptKey);
-  sessionStorage.removeItem(draftKey);
+  widget.storage.removeItem(checkoutKey);
+  widget.storage.removeItem(attemptKey);
+  widget.storage.removeItem(draftKey);
   get('details').reset();
 }
 
@@ -152,18 +155,18 @@ async function refresh() {
 }
 
 function savedAttempt() {
-  return JSON.parse(sessionStorage.getItem(attemptKey) ?? 'null');
+  return JSON.parse(widget.storage.getItem(attemptKey) ?? 'null');
 }
 
 async function confirmSelection(attempt) {
   try {
-    const checkout = await request('/api/checkouts', attempt);
+    const checkout = await request(widget.apiPrefix + '/checkouts', attempt);
     activeId = checkout.id;
-    sessionStorage.setItem(checkoutKey, activeId);
+    widget.storage.setItem(checkoutKey, activeId);
     await showCheckout(checkout);
   } catch (error) {
     if ([400, 409].includes(error.status)) {
-      sessionStorage.removeItem(attemptKey);
+      widget.storage.removeItem(attemptKey);
       await selection();
     }
     showStep('selection');
@@ -171,6 +174,21 @@ async function confirmSelection(attempt) {
   }
 }
 
+get('widget-shop').addEventListener('change', async (event) => {
+  widget.selectShop(event.target.value);
+  get('error').hidden = true;
+  get('seller').hidden = true;
+  showStep(null);
+  get('loading').hidden = false;
+  try {
+    await selection();
+    showStep('selection');
+  } catch (error) {
+    get('loading').hidden = true;
+    widget.showPicker(true);
+    showError(error);
+  }
+});
 get('slot').addEventListener('change', loadReturns);
 get('return').addEventListener('change', showPrice);
 
@@ -178,26 +196,28 @@ get('selection').addEventListener('submit', async (event) => {
   event.preventDefault();
   const button = event.submitter;
   button.disabled = true;
+  get('widget-shop').disabled = true;
   get('error').hidden = true;
   try {
     const slotId = get('slot').value;
     const returnAt = get('return').value;
     const categoryId = get('category').value;
     let attempt = savedAttempt();
-    if (attempt?.slotId !== slotId || attempt.categoryId !== categoryId || attempt.returnAt !== returnAt) {
+    if (attempt?.shopId !== offer.shop.id || attempt.slotId !== slotId || attempt.categoryId !== categoryId || attempt.returnAt !== returnAt) {
       attempt = { requestId: crypto.randomUUID(), slotId, returnAt, shopId: offer.shop.id, categoryId };
-      sessionStorage.setItem(attemptKey, JSON.stringify(attempt));
+      widget.storage.setItem(attemptKey, JSON.stringify(attempt));
     }
     await confirmSelection(attempt);
   } catch (error) {
     showError(error);
   } finally {
     button.disabled = returns.length === 0;
+    get('widget-shop').disabled = false;
   }
 });
 
 get('details').addEventListener('input', () => {
-  sessionStorage.setItem(draftKey, JSON.stringify(details()));
+  widget.storage.setItem(draftKey, JSON.stringify(details()));
 });
 
 get('details').addEventListener('submit', async (event) => {
@@ -232,6 +252,7 @@ get('new-booking').addEventListener('click', async () => {
 });
 
 try {
+  await widget.load();
   await selection();
   const attempt = savedAttempt();
   if (activeId) await refresh();

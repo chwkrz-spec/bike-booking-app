@@ -85,3 +85,12 @@ th, td { padding: 0.65rem; border-bottom: 1px solid #dce5dd; }
 }
 
 #terms { white-space: pre-line; }
+.branded-widget { background: var(--widget-background); }
+.branded-widget button:not(.secondary) { color: var(--widget-button-text); background: var(--widget-accent); }
+.branded-widget button:not(.secondary):hover { filter: brightness(0.9); }
+#widget-logo { display: block; max-width: min(12rem, 100%); max-height: 5rem; object-fit: contain; margin-bottom: 1rem; }
+.widget-colors { display: flex; flex-wrap: wrap; gap: 0 1rem; }
+.widget-colors input[type="color"] { padding: 0.25rem; max-width: 7rem; }
+.widget-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(17rem, 100%), 1fr)); gap: 1rem; }
+.widget-list fieldset { min-width: 0; margin-bottom: 0; }
+.widget-list legend { font-weight: 650; }
