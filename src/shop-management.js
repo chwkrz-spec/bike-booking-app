@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
-import { category, shop } from './catalog.js';
+import { equipment, shop } from './catalog.js';
 import { OperationError } from './operation-error.js';
 
 const demoPartnerId = 'demo';
@@ -11,6 +11,7 @@ const defaultSettings = {
   minimumNoticeMinutes: 30,
   bookingHorizonMinutes: 2880,
   maxRentalMinutes: 2880,
+  turnaroundBufferMinutes: 0,
 };
 
 const keys = Object.keys(defaultSettings);
@@ -52,9 +53,9 @@ function settingsUpdate(input, current, isOwner) {
   if (!isOwner && fields.some((key) => key !== 'minimumNoticeMinutes')) throw forbidden();
   if (!fields.length || fields.some((key) => !keys.includes(key))) throw badSettings();
   const settings = { ...current, ...input };
-  for (const field of ['minimumNoticeMinutes', 'bookingHorizonMinutes', 'maxRentalMinutes']) {
+  for (const field of ['minimumNoticeMinutes', 'bookingHorizonMinutes', 'maxRentalMinutes', 'turnaroundBufferMinutes']) {
     const value = settings[field];
-    const minimum = field === 'minimumNoticeMinutes' ? 0 : 30;
+    const minimum = ['minimumNoticeMinutes', 'turnaroundBufferMinutes'].includes(field) ? 0 : 30;
     if (!Number.isInteger(value) || value < minimum || value > 366 * 1440) throw badSettings();
   }
   const { weeklyHours, holidayHours } = settings;
@@ -85,6 +86,12 @@ export function openShopManagement(db, { staffPassword, demoOwners = [] }) {
       name TEXT NOT NULL,
       terms TEXT NOT NULL,
       settings TEXT NOT NULL
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS shop_stock (
+      shop_id TEXT NOT NULL REFERENCES shops(id),
+      item_id TEXT NOT NULL,
+      quantity INTEGER NOT NULL CHECK (quantity >= 0),
+      PRIMARY KEY (shop_id, item_id)
     ) STRICT;
     CREATE TABLE IF NOT EXISTS staff_members (
       username TEXT PRIMARY KEY,
@@ -133,6 +140,16 @@ export function openShopManagement(db, { staffPassword, demoOwners = [] }) {
   const selectPartner = db.prepare('SELECT seller FROM partners WHERE id = ?');
   const updatePartner = db.prepare('UPDATE partners SET seller = ? WHERE id = ?');
   const updateSettings = db.prepare('UPDATE shops SET settings = ? WHERE id = ?');
+  const selectQuantities = db.prepare('SELECT item_id, quantity FROM shop_stock WHERE shop_id = ?');
+  const updateQuantity = db.prepare(`
+    INSERT INTO shop_stock VALUES (?, ?, ?)
+    ON CONFLICT (shop_id, item_id) DO UPDATE SET quantity = excluded.quantity
+  `);
+
+  function inventory(shopId) {
+    const quantities = new Map(selectQuantities.all(shopId).map(({ item_id, quantity }) => [item_id, quantity]));
+    return equipment.map(({ stock, ...item }) => ({ ...item, quantity: quantities.get(item.id) ?? stock }));
+  }
 
   function accessible(actor, shopId) {
     const row = selectShop.get(shopId);
@@ -145,7 +162,7 @@ export function openShopManagement(db, { staffPassword, demoOwners = [] }) {
 
   function settings(actor, shopId, input) {
     const { row } = accessible(actor, shopId);
-    const current = JSON.parse(row.settings);
+    const current = { ...defaultSettings, ...JSON.parse(row.settings) };
     if (input === undefined) return current;
     const next = settingsUpdate(input, current, actor.role === 'owner');
     updateSettings.run(JSON.stringify(next), shopId);
@@ -185,7 +202,7 @@ export function openShopManagement(db, { staffPassword, demoOwners = [] }) {
       if (!row) throw missing();
       return {
         shop: { id: row.id, name: row.name, seller: JSON.parse(row.seller), terms: row.terms },
-        settings: JSON.parse(row.settings),
+        settings: { ...defaultSettings, ...JSON.parse(row.settings) },
       };
     },
     accessible,
@@ -198,9 +215,17 @@ export function openShopManagement(db, { staffPassword, demoOwners = [] }) {
       seedShop.run(id, actor.partnerId, name, shop.terms, JSON.stringify(defaultSettings));
       return { id, name, canRefund: true };
     },
-    stock(actor, shopId) {
+    inventory,
+    stock(actor, shopId, input) {
       accessible(actor, shopId);
-      return [{ id: category.id, name: category.name, quantity: category.stock }];
+      if (input !== undefined) {
+        const { itemId, quantity } = input;
+        if (!equipment.some(({ id }) => id === itemId) || !Number.isInteger(quantity) || quantity < 0 || quantity > 1000) {
+          throw new OperationError(400, 'Podaj prawidłową ilość sprzętu od 0 do 1000.');
+        }
+        updateQuantity.run(shopId, itemId, quantity);
+      }
+      return inventory(shopId).map(({ id, name, kind, quantity }) => ({ id, name, kind, quantity }));
     },
     partner(actor, input) {
       requireOwner(actor);

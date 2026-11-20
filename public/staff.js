@@ -1,4 +1,5 @@
 import { formatAmount, formatSlot, get, request, showError } from './common.js';
+import { pickupControls, stockForms } from './staff-equipment.js';
 
 const dayNames = {
   mon: 'Poniedziałek', tue: 'Wtorek', wed: 'Środa', thu: 'Czwartek',
@@ -27,11 +28,13 @@ function displayBookings(bookings) {
   for (const booking of bookings) {
     const row = list.insertRow();
     cell(row, formatSlot(booking));
-    cell(row, booking.categoryName);
+    cell(row, ...booking.items.map(({ name, quantity }) => name + ' × ' + quantity));
     cell(row, booking.email, booking.phone);
-    cell(row, booking.riderHeight + ' cm');
+    cell(row, ...booking.riderHeights.map((height) => height + ' cm'));
     cell(row, formatAmount(booking.total, booking.currency));
     cell(row, 'Potwierdzona', booking.id);
+    const pickup = pickupControls(booking, saves, refreshShop);
+    if (pickup) row.cells[row.cells.length - 1].append(pickup);
   }
   get('list').hidden = bookings.length === 0;
   get('empty').hidden = bookings.length !== 0;
@@ -74,6 +77,7 @@ function displaySettings(settings) {
   if (!owner) return;
   shopForm.elements.bookingHorizonMinutes.value = settings.bookingHorizonMinutes;
   shopForm.elements.maxRentalMinutes.value = settings.maxRentalMinutes;
+  shopForm.elements.turnaroundBufferMinutes.value = settings.turnaroundBufferMinutes;
   const inputs = get('opening-hours');
   inputs.replaceChildren();
   for (const [day, name] of Object.entries(dayNames)) {
@@ -103,11 +107,7 @@ async function refreshShop() {
     ]);
     if (selected !== viewingShop) return;
     displayBookings(bookings);
-    get('staff-stock').replaceChildren(...stock.map(({ name, quantity }) => {
-      const item = document.createElement('li');
-      item.textContent = name + ' · ' + quantity + ' szt.';
-      return item;
-    }));
+    get('staff-stock').replaceChildren(...stockForms(stock, staffShopPath('stock'), saves));
     displaySettings(settings);
     get('shop-admin').hidden = false;
   } catch (error) {
@@ -166,11 +166,12 @@ function saves(form, callback) {
 }
 
 saves(shopForm, async () => {
-  const { minimumNoticeMinutes, bookingHorizonMinutes, maxRentalMinutes } = formValues(shopForm);
+  const { minimumNoticeMinutes, bookingHorizonMinutes, maxRentalMinutes, turnaroundBufferMinutes } = formValues(shopForm);
   const settings = { minimumNoticeMinutes: Number(minimumNoticeMinutes) };
   if (owner) {
     settings.bookingHorizonMinutes = Number(bookingHorizonMinutes);
     settings.maxRentalMinutes = Number(maxRentalMinutes);
+    settings.turnaroundBufferMinutes = Number(turnaroundBufferMinutes);
     settings.weeklyHours = Object.fromEntries(Object.keys(dayNames).map((day) => [day, parseHours(get('hours-' + day).value)]));
     settings.holidayHours = holidayHours(get('holiday-hours').value);
   }

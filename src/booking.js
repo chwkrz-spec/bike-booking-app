@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { bookingCalendar, provisionalHourlyTotal } from './booking-calendar.js';
+import { bookingCalendar } from './booking-calendar.js';
+import { itemTotals, sameItems, selectionItems, stockForPeriod } from './cart.js';
 import { category, shop } from './catalog.js';
 import { OperationError } from './operation-error.js';
 import { createPaymentSimulator } from './payment-simulator.js';
@@ -9,10 +10,10 @@ import { openShopManagement } from './shop-management.js';
 const holdDuration = 15 * 60 * 1000;
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 
-function renterDetails(input) {
+function renterDetails(input, bikeCount) {
   const email = typeof input.email === 'string' ? input.email.trim() : '';
   const phone = typeof input.phone === 'string' ? input.phone.trim() : '';
-  const { riderHeight, acceptedTerms } = input;
+  const riderHeights = input.riderHeights === undefined ? [input.riderHeight] : input.riderHeights;
   const phoneDigits = phone.replace(/[^0-9]/g, '').length;
   if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     throw new OperationError(400, 'Podaj prawidłowy adres e-mail.');
@@ -20,13 +21,20 @@ function renterDetails(input) {
   if (!/^\+?[0-9 ()-]+$/.test(phone) || phoneDigits < 7 || phoneDigits > 15) {
     throw new OperationError(400, 'Podaj prawidłowy numer telefonu.');
   }
-  if (!Number.isInteger(riderHeight) || riderHeight < 50 || riderHeight > 250) {
-    throw new OperationError(400, 'Podaj wzrost uczestnika w centymetrach.');
+  if (!Array.isArray(riderHeights) || riderHeights.length !== bikeCount ||
+      riderHeights.some((height) => !Number.isInteger(height) || height < 50 || height > 250)) {
+    throw new OperationError(400, 'Podaj jeden wzrost w centymetrach dla każdego roweru (50–250).');
   }
-  if (acceptedTerms !== true) {
+  if (input.acceptedTerms !== true) {
     throw new OperationError(400, 'Zaakceptuj warunki najmu.');
   }
-  return { email, phone, riderHeight };
+  return { email, phone, riderHeights };
+}
+
+function savedItems(row) {
+  return row.items ? JSON.parse(row.items) : [{
+    itemId: row.category_id, name: category.name, kind: 'bike', quantity: 1, unitTotal: row.total,
+  }];
 }
 
 function describeCheckout(row, now, payment) {
@@ -35,6 +43,7 @@ function describeCheckout(row, now, payment) {
     status: row.deadline <= now && ['held', 'payment'].includes(row.status) ? 'expired' : row.status,
     shopId: row.shop_id,
     categoryId: row.category_id,
+    items: savedItems(row),
     pickupAt: new Date(row.pickup_at).toISOString(),
     returnAt: new Date(row.return_at).toISOString(),
     expiresAt: new Date(row.deadline).toISOString(),
@@ -66,6 +75,11 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
       terms_text TEXT,
       terms_accepted_at INTEGER
     ) STRICT;
+    CREATE TABLE IF NOT EXISTS checkout_carts (
+      checkout_id TEXT PRIMARY KEY REFERENCES checkouts(id),
+      items TEXT NOT NULL,
+      rider_heights TEXT
+    ) STRICT;
     CREATE TABLE IF NOT EXISTS payments (
       id TEXT PRIMARY KEY,
       checkout_id TEXT NOT NULL UNIQUE REFERENCES checkouts(id),
@@ -78,6 +92,12 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
       checkout_id TEXT NOT NULL UNIQUE REFERENCES checkouts(id),
       payment_id TEXT NOT NULL UNIQUE REFERENCES payments(id),
       confirmed_at INTEGER NOT NULL
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS pickup_assignments (
+      booking_id TEXT PRIMARY KEY REFERENCES bookings(id),
+      assigned_by TEXT NOT NULL,
+      assigned_at INTEGER NOT NULL,
+      items TEXT NOT NULL
     ) STRICT;
     CREATE TABLE IF NOT EXISTS confirmation_messages (
       booking_id TEXT PRIMARY KEY REFERENCES bookings(id),
@@ -109,43 +129,52 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     FROM payments p JOIN payment_failure_messages m ON m.payment_id = p.id
     WHERE p.checkout_id = ?
   `);
-  const listBookings = db.prepare(`
-    SELECT b.id AS booking_id, c.* FROM bookings b JOIN checkouts c ON c.id = b.checkout_id
-    WHERE c.shop_id = ? ORDER BY c.pickup_at, b.id
-  `);
+  const bookingRows = `
+    SELECT b.id AS booking_id, c.*, cart.items, cart.rider_heights,
+      assignment.assigned_by, assignment.assigned_at, assignment.items AS assigned_items
+    FROM bookings b JOIN checkouts c ON c.id = b.checkout_id
+    LEFT JOIN checkout_carts cart ON cart.checkout_id = c.id
+    LEFT JOIN pickup_assignments assignment ON assignment.booking_id = b.id
+  `;
+  const listBookings = db.prepare(bookingRows + ' WHERE c.shop_id = ? ORDER BY c.pickup_at, b.id');
+  const selectStaffBooking = db.prepare(bookingRows + ' WHERE c.shop_id = ? AND b.id = ?');
+  const recordAssignment = db.prepare('INSERT INTO pickup_assignments VALUES (?, ?, ?, ?)');
   const confirmCheckout = db.prepare("UPDATE checkouts SET status = 'confirmed' WHERE id = ?");
   const refundCheckout = db.prepare("UPDATE checkouts SET status = 'refund_started' WHERE id = ?");
   const verifyPayment = db.prepare("UPDATE payments SET status = 'verified' WHERE id = ?");
-  const selectRetry = db.prepare('SELECT * FROM checkouts WHERE request_id = ?');
+  const selectRetry = db.prepare(`
+    SELECT c.*, cart.items FROM checkouts c LEFT JOIN checkout_carts cart ON cart.checkout_id = c.id WHERE c.request_id = ?
+  `);
   const checkoutPayment = db.prepare('SELECT * FROM payments WHERE checkout_id = ?');
   const insertPayment = db.prepare("INSERT INTO payments (id, checkout_id, status) VALUES (?, ?, 'pending')");
   const startPayment = db.prepare(`
     UPDATE checkouts SET status = 'payment', deadline = ?, email = ?, phone = ?, rider_height = ?,
       terms_text = ?, terms_accepted_at = ? WHERE id = ?
   `);
-  const selectCheckout = db.prepare('SELECT * FROM checkouts WHERE id = ?');
+  const selectCheckout = db.prepare(`
+    SELECT c.*, cart.items FROM checkouts c LEFT JOIN checkout_carts cart ON cart.checkout_id = c.id WHERE c.id = ?
+  `);
   const occupied = db.prepare(`
-    SELECT COUNT(*) AS quantity FROM checkouts
-    WHERE shop_id = ? AND category_id = ? AND pickup_at < ? AND return_at > ?
-      AND (status = 'confirmed' OR (status IN ('held', 'payment') AND deadline > ?))
+    SELECT c.*, cart.items FROM checkouts c LEFT JOIN checkout_carts cart ON cart.checkout_id = c.id
+    WHERE c.shop_id = ? AND c.return_at > ?
+      AND (c.status = 'confirmed' OR (c.status IN ('held', 'payment') AND c.deadline > ?))
   `);
   const insertCheckout = db.prepare(`
     INSERT INTO checkouts (id, request_id, shop_id, category_id, pickup_at, return_at, total, status, deadline)
     VALUES (?, ?, ?, ?, ?, ?, ?, 'held', ?)
   `);
+  const insertCart = db.prepare('INSERT INTO checkout_carts (checkout_id, items) VALUES (?, ?)');
+  const recordHeights = db.prepare('UPDATE checkout_carts SET rider_heights = ? WHERE checkout_id = ?');
 
-  function available(slot, timestamp, shopId = shop.id) {
-    return occupied.get(shopId, category.id, slot.returnAt, slot.pickupAt, timestamp).quantity < category.stock;
+  function availability(shopId, inventory, timestamp, bufferMinutes = 0) {
+    const commitments = occupied.all(shopId, timestamp - bufferMinutes * 60_000, timestamp).map((row) => ({
+      pickupAt: row.pickup_at, returnAt: row.return_at, items: savedItems(row),
+    }));
+    return stockForPeriod(inventory, commitments, bufferMinutes);
   }
 
-  function firstAvailableReturns(calendar, pickupAt, timestamp, shopId, limit = Infinity) {
-    const slots = [];
-    for (const slot of calendar.returnsFor(pickupAt)) {
-      if (!available(slot, timestamp, shopId)) break;
-      slots.push(slot);
-      if (slots.length === limit) break;
-    }
-    return slots;
+  function available(items, quantities) {
+    return items.every(({ itemId, quantity }) => quantities[itemId] >= quantity);
   }
 
   function checkout(id) {
@@ -166,64 +195,96 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     }
   }
 
+  function pickupAssignment(row) {
+    return row.assigned_items ? {
+      items: JSON.parse(row.assigned_items),
+      assignedBy: row.assigned_by,
+      assignedAt: new Date(row.assigned_at).toISOString(),
+    } : null;
+  }
+
+  function canAssignUnits(row, time) {
+    return row.status === 'confirmed' && !row.assigned_items && row.pickup_at <= time && time < row.return_at;
+  }
+
   return {
     management,
     offer(shopId, pickupAt) {
       const time = now();
       const { shop: selectedShop, settings } = management.publicShop(shopId);
       const calendar = bookingCalendar(settings, time);
+      const inventory = management.inventory(selectedShop.id);
+      const quantitiesFor = availability(selectedShop.id, inventory, time, settings.turnaroundBufferMinutes);
+      const bikes = inventory.filter(({ kind }) => kind === 'bike');
+      const withAvailability = (slot) => slot && { ...slot, availableQuantities: quantitiesFor(slot) };
+      const hasBike = (slot) => slot && bikes.some(({ id }) => slot.availableQuantities[id] > 0);
       const slots = [];
       if (pickupAt === undefined) {
         for (const pickup of calendar.pickups()) {
           const preview = calendar.preview(pickup);
-          if (preview && available(preview, time, selectedShop.id)) {
-            slots.push(preview);
-          } else if (preview) {
-            const [shortest] = firstAvailableReturns(calendar, preview.id, time, selectedShop.id, 1);
-            if (shortest) slots.push(shortest);
+          const slot = withAvailability(preview);
+          if (hasBike(slot)) slots.push(slot);
+          else if (preview) {
+            const shortest = withAvailability(calendar.returnsFor(preview.id).next().value);
+            if (hasBike(shortest)) slots.push(shortest);
           }
         }
       } else {
-        slots.push(...firstAvailableReturns(calendar, pickupAt, time, selectedShop.id));
+        for (const period of calendar.returnsFor(pickupAt)) {
+          const slot = withAvailability(period);
+          if (!hasBike(slot)) break;
+          slots.push(slot);
+        }
       }
       return {
         shop: selectedShop,
         category: { id: category.id, name: category.name },
+        equipment: inventory,
         currency: 'PLN',
-        slots: slots.map((slot) => ({
-          ...slot,
-          pickupAt: new Date(slot.pickupAt).toISOString(),
-          returnAt: new Date(slot.returnAt).toISOString(),
-          total: provisionalHourlyTotal(slot, category.hourlyRate),
-        })),
+        slots: slots.map((slot) => {
+          const totals = itemTotals(slot, inventory);
+          return {
+            ...slot,
+            pickupAt: new Date(slot.pickupAt).toISOString(),
+            returnAt: new Date(slot.returnAt).toISOString(),
+            total: totals[category.id],
+            itemTotals: totals,
+          };
+        }),
       };
     },
-    hold({ shopId, categoryId, slotId, returnAt, requestId }) {
+    hold({ shopId, categoryId, slotId, returnAt, requestId, items }) {
       if (requestId !== undefined && (typeof requestId !== 'string' || !uuid.test(requestId))) {
         throw new OperationError(400, 'Nieprawidłowy identyfikator próby.');
       }
+      if (typeof shopId !== 'string') throw new OperationError(400, 'Wybierz punkt i termin z aktualnej oferty.');
       return transaction(() => {
         const time = now();
+        const inventory = management.inventory(shopId);
+        const selected = selectionItems(items, categoryId, inventory);
         const retry = requestId && selectRetry.get(requestId);
         if (retry) {
-          if (retry.shop_id !== shopId || retry.category_id !== categoryId ||
+          if (retry.shop_id !== shopId || !sameItems(selected, savedItems(retry)) ||
               new Date(retry.pickup_at).toISOString() !== slotId ||
               (returnAt !== undefined && new Date(retry.return_at).toISOString() !== returnAt)) {
             throw new OperationError(409, 'Ta próba dotyczy innego wyboru.');
           }
           return describeCheckout(retry, time, checkoutPayment.get(retry.id));
         }
-        if (typeof shopId !== 'string' || categoryId !== category.id) {
-          throw new OperationError(400, 'Wybierz termin i rower z aktualnej oferty.');
-        }
         const { settings } = management.publicShop(shopId);
         const slot = bookingCalendar(settings, time).selection(slotId, returnAt);
-        if (!slot) throw new OperationError(400, 'Wybierz termin i rower z aktualnej oferty.');
-        if (!available(slot, time, shopId)) {
-          throw new OperationError(409, 'Rower jest już zajęty w tym terminie.');
+        if (!slot) throw new OperationError(400, 'Wybierz termin z aktualnej oferty.');
+        const quantitiesFor = availability(shopId, inventory, time, settings.turnaroundBufferMinutes);
+        if (!available(selected, quantitiesFor(slot))) {
+          throw new OperationError(409, 'Wybrany sprzęt jest już zajęty w tym terminie.');
         }
         const id = randomUUID();
-        insertCheckout.run(id, requestId ?? null, shopId, category.id, slot.pickupAt, slot.returnAt, provisionalHourlyTotal(slot, category.hourlyRate), time + holdDuration);
+        const totals = itemTotals(slot, inventory);
+        const cart = selected.map((item) => ({ ...item, unitTotal: totals[item.itemId] }));
+        const total = cart.reduce((sum, item) => sum + item.quantity * item.unitTotal, 0);
+        const firstBike = cart.find(({ kind }) => kind === 'bike').itemId;
+        insertCheckout.run(id, requestId ?? null, shopId, firstBike, slot.pickupAt, slot.returnAt, total, time + holdDuration);
+        insertCart.run(id, JSON.stringify(cart));
         return describeCheckout(checkout(id), time);
       });
     },
@@ -239,10 +300,12 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         if (current.deadline <= time) throw new OperationError(409, 'Blokada wygasła. Wybierz termin ponownie.');
         if (payment) return describeCheckout(current, time, payment);
 
-        const { email, phone, riderHeight } = renterDetails(input);
+        const bikeCount = savedItems(current).reduce((count, item) => count + (item.kind === 'bike' ? item.quantity : 0), 0);
+        const { email, phone, riderHeights } = renterDetails(input, bikeCount);
         const paymentId = randomUUID();
         insertPayment.run(paymentId, id);
-        startPayment.run(time + holdDuration, email, phone, riderHeight, management.publicShop(current.shop_id).shop.terms, time, id);
+        startPayment.run(time + holdDuration, email, phone, riderHeights[0], management.publicShop(current.shop_id).shop.terms, time, id);
+        recordHeights.run(JSON.stringify(riderHeights), id);
         return describeCheckout(checkout(id), time, { id: paymentId });
       });
     },
@@ -282,7 +345,13 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         if (!simulator.verify(id)) return { status: expired ? 'expired' : 'payment' };
         const startedRefund = simulator.refund(id);
         const originalSlot = { pickupAt: current.pickup_at, returnAt: current.return_at };
-        if (startedRefund || (expired && (originalSlot.pickupAt <= time || !available(originalSlot, time, current.shop_id)))) {
+        const canReclaim = () => {
+          const { settings } = management.publicShop(current.shop_id);
+          const inventory = management.inventory(current.shop_id);
+          const quantitiesFor = availability(current.shop_id, inventory, time, settings.turnaroundBufferMinutes);
+          return available(savedItems(current), quantitiesFor(originalSlot));
+        };
+        if (startedRefund || (expired && (originalSlot.pickupAt <= time || !canReclaim()))) {
           const refund = startedRefund ?? simulator.startFullRefund(id, time);
           refundCheckout.run(current.id);
           insertFailureMessage.run(id, current.email, 'Zwrot płatności za rezerwację',
@@ -308,6 +377,39 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
       if (!message) throw new OperationError(404, 'Brak informacji o zwrocie płatności.');
       return message;
     },
+    assignPickup(actor, shopId, bookingId, input) {
+      return transaction(() => {
+        management.accessible(actor, shopId);
+        const row = selectStaffBooking.get(shopId, bookingId);
+        if (!row) throw new OperationError(404, 'Nie znaleziono rezerwacji.');
+        const bikes = savedItems(row).filter(({ kind }) => kind === 'bike');
+        const invalid = () => new OperationError(400, 'Wpisz różne oznaczenia wszystkich wydawanych rowerów (do 60 znaków).');
+        if (!Array.isArray(input.items) || input.items.length !== bikes.length) throw invalid();
+        const seen = new Set();
+        const items = bikes.map(({ itemId, quantity }) => {
+          const units = input.items.find((entry) => entry?.itemId === itemId)?.units;
+          if (!Array.isArray(units) || units.length !== quantity) throw invalid();
+          return {
+            itemId,
+            units: units.map((label) => {
+              const unit = typeof label === 'string' ? label.trim() : '';
+              const key = unit.toLowerCase();
+              if (!unit || unit.length > 60 || seen.has(key)) throw invalid();
+              seen.add(key);
+              return unit;
+            }),
+          };
+        });
+        const encoded = JSON.stringify(items);
+        if (row.assigned_items === encoded) return pickupAssignment(row);
+        const time = now();
+        if (!canAssignUnits(row, time)) {
+          throw new OperationError(409, 'Rowery można przydzielić przy odbiorze, przed terminem zwrotu.');
+        }
+        recordAssignment.run(bookingId, actor.username, time, encoded);
+        return pickupAssignment(selectStaffBooking.get(shopId, bookingId));
+      });
+    },
     staffBookings(actor, shopId) {
       const ids = shopId === undefined ? management.shops(actor).map(({ id }) => id) : [shopId];
       if (shopId !== undefined) management.accessible(actor, shopId);
@@ -316,10 +418,13 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         .map((row) => ({
           ...describeCheckout(row, now()),
           id: row.booking_id,
-          categoryName: category.name,
+          categoryName: savedItems(row).find(({ kind }) => kind === 'bike').name,
           email: row.email,
           phone: row.phone,
           riderHeight: row.rider_height,
+          riderHeights: row.rider_heights ? JSON.parse(row.rider_heights) : [row.rider_height],
+          canAssignUnits: canAssignUnits(row, now()),
+          pickupAssignment: pickupAssignment(row),
         }));
     },
     close() {

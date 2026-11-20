@@ -12,6 +12,7 @@ const assets = new Map([
   ['/assets/widget.js', ['widget.js', 'text/javascript']],
   ['/assets/payment.js', ['payment.js', 'text/javascript']],
   ['/assets/staff.js', ['staff.js', 'text/javascript']],
+  ['/assets/staff-equipment.js', ['staff-equipment.js', 'text/javascript']],
 ]);
 
 async function file(response, name, type = 'text/html') {
@@ -97,6 +98,10 @@ export function createApp({
         if (assignment && method === 'POST') {
           return json(response, 200, management.assignment(actor, assignment[1], await staffBody(request)));
         }
+        const pickup = path.match(/^\/api\/staff\/shops\/([\w-]+)\/bookings\/([\w-]+)\/pickup$/);
+        if (pickup && method === 'POST') {
+          return json(response, 200, booking.assignPickup(actor, pickup[1], pickup[2], await staffBody(request)));
+        }
         const shopRoute = path.match(/^\/api\/staff\/shops\/([\w-]+)\/(settings|stock|bookings)$/);
         if (shopRoute) {
           const [, shopId, resource] = shopRoute;
@@ -104,7 +109,10 @@ export function createApp({
             if (method === 'GET') return json(response, 200, management.settings(actor, shopId));
             if (method === 'POST') return json(response, 200, management.settings(actor, shopId, await staffBody(request)));
           }
-          if (method === 'GET' && resource === 'stock') return json(response, 200, management.stock(actor, shopId));
+          if (resource === 'stock') {
+            if (method === 'GET') return json(response, 200, management.stock(actor, shopId));
+            if (method === 'POST') return json(response, 200, management.stock(actor, shopId, await staffBody(request)));
+          }
           if (method === 'GET' && resource === 'bookings') return json(response, 200, booking.staffBookings(actor, shopId));
         }
       }

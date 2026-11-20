@@ -83,3 +83,14 @@ th, td { padding: 0.65rem; border-bottom: 1px solid #dce5dd; }
 @media (max-width: 44rem) {
   .booking-layout { grid-template-columns: 1fr; }
 }
+
+#equipment { border: 1px solid #dce5dd; border-radius: 0.5rem; margin: 1rem 0; padding: 0.75rem; }
+#equipment-quantities > div, #staff-stock form { display: grid; gap: 0.5rem; align-items: center; }
+#equipment-quantities > div { grid-template-columns: minmax(0, 1fr) 5rem auto; }
+#equipment-quantities input, #staff-stock input { margin: 0; }
+#equipment-quantities label, #staff-stock label { margin: 0; }
+#equipment-quantities > div + div, #staff-stock li + li { margin-top: 0.5rem; }
+#equipment-quantities .hint { margin: 0; }
+#staff-stock { list-style: none; padding: 0; }
+#staff-stock form { grid-template-columns: minmax(0, 1fr) 5rem auto; }
+#staff-stock form button { margin: 0; }

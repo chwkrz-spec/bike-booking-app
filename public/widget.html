@@ -15,14 +15,16 @@
       <p id="error" class="error" role="alert" hidden></p>
       <p id="loading" role="status">Sprawdzamy dostępne terminy…</p>
       <form id="selection" hidden>
-        <label for="category">Kategoria roweru</label>
-        <select id="category" name="category" required></select>
         <label for="slot">Termin odbioru</label>
         <select id="slot" name="slot" required></select>
         <label for="return">Termin zwrotu</label>
         <select id="return" name="return" required></select>
         <p id="no-slots" hidden>Brak dostępnych terminów.</p>
         <p class="hint">Godziny w czasie polskim</p>
+        <fieldset id="equipment">
+          <legend>Sprzęt</legend>
+          <div id="equipment-quantities"></div>
+        </fieldset>
         <div class="total-line"><span>Do zapłaty</span><strong data-testid="total" id="selection-total"></strong></div>
         <button type="submit">Potwierdź wybór</button>
       </form>
@@ -31,13 +33,12 @@
         <div class="total-line"><span>Do zapłaty</span><strong id="checkout-total"></strong></div>
       </div>
       <form id="details" hidden>
-        <p class="deadline">Rower zarezerwowany przez <time id="hold-deadline"></time></p>
+        <p class="deadline">Blokada sprzętu przez <time id="hold-deadline"></time></p>
         <label for="email">Adres e-mail</label>
         <input id="email" name="email" type="email" autocomplete="email" maxlength="254" required>
         <label for="phone">Numer telefonu</label>
         <input id="phone" name="phone" type="tel" autocomplete="tel" maxlength="30" required>
-        <label for="height">Wzrost uczestnika (cm)</label>
-        <input id="height" name="riderHeight" type="number" min="50" max="250" step="1" required>
+        <div id="rider-heights"></div>
         <details>
           <summary>Warunki najmu</summary>
           <p id="terms"></p>

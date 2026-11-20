@@ -10,6 +10,7 @@ const steps = ['selection', 'details', 'payment-pending', 'confirmation'];
 let offer;
 let returns = [];
 let returnRequest = 0;
+let initialQuantities;
 const confirmButton = get('selection').querySelector('button');
 let activeId = sessionStorage.getItem(checkoutKey);
 let pendingRefresh;
@@ -26,9 +27,56 @@ function currentSlot() {
   return returns.find(({ returnAt }) => returnAt === get('return').value);
 }
 
+function selectedItems() {
+  return offer.equipment.map(({ id, kind }) => ({
+    itemId: id, kind, quantity: get('quantity-' + id).valueAsNumber,
+  }));
+}
+
 function showPrice() {
   const slot = currentSlot();
-  get('selection-total').textContent = slot ? formatAmount(slot.total, offer.currency) : '—';
+  if (slot && initialQuantities) {
+    const firstBike = offer.equipment.find(({ id, kind }) => kind === 'bike' && slot.availableQuantities[id] > 0);
+    if (firstBike) get('quantity-' + firstBike.id).value = 1;
+    initialQuantities = false;
+  }
+
+  for (const { id } of offer.equipment) {
+    const available = slot?.availableQuantities[id] ?? 0;
+    const input = get('quantity-' + id);
+    input.max = available;
+    input.disabled = !slot;
+    get('availability-' + id).textContent = slot ? 'Dostępne: ' + available : '';
+  }
+
+  const items = selectedItems();
+  const valid = slot && items.some(({ kind, quantity }) => kind === 'bike' && quantity > 0) &&
+    items.every(({ itemId, quantity }) => Number.isInteger(quantity) && quantity >= 0 && quantity <= slot.availableQuantities[itemId]);
+  confirmButton.disabled = !valid;
+  const total = valid ? items.reduce((sum, { itemId, quantity }) => sum + slot.itemTotals[itemId] * quantity, 0) : null;
+  get('selection-total').textContent = total === null ? '—' : formatAmount(total, offer.currency);
+}
+
+function buildQuantities() {
+  get('equipment-quantities').replaceChildren(...offer.equipment.map(({ id, name }) => {
+    const row = document.createElement('div');
+    const label = document.createElement('label');
+    const input = document.createElement('input');
+    const hint = document.createElement('span');
+    label.textContent = name;
+    label.htmlFor = input.id = 'quantity-' + id;
+    hint.id = 'availability-' + id;
+    hint.className = 'hint';
+    input.type = 'number';
+    input.min = 0;
+    input.step = 1;
+    input.value = 0;
+    input.required = true;
+    input.setAttribute('aria-describedby', hint.id);
+    row.append(label, input, hint);
+    return row;
+  }));
+  initialQuantities = true;
 }
 
 function offerPath(pickupAt) {
@@ -56,7 +104,6 @@ async function loadReturns() {
     const preferred = offer.slots.find(({ id }) => id === pickupAt)?.returnAt;
     if (returns.some(({ returnAt }) => returnAt === preferred)) get('return').value = preferred;
     get('return').disabled = returns.length === 0;
-    confirmButton.disabled = returns.length === 0;
     get('no-slots').hidden = returns.length > 0;
     showPrice();
   } catch (error) {
@@ -72,7 +119,7 @@ async function selection() {
   get('seller-nip').textContent = 'NIP ' + offer.shop.seller.nip;
   get('terms').textContent = offer.shop.terms;
   get('seller').hidden = false;
-  get('category').replaceChildren(new Option(offer.category.name, offer.category.id));
+  buildQuantities();
   get('slot').replaceChildren(...offer.slots.map((slot) => new Option(formatInstant(slot.pickupAt), slot.id)));
   await loadReturns();
 }
@@ -82,16 +129,39 @@ function details() {
   return {
     email: values.get('email'),
     phone: values.get('phone'),
-    riderHeight: Number(values.get('riderHeight')),
+    riderHeights: values.getAll('riderHeight').map(Number),
     acceptedTerms: values.has('acceptedTerms'),
   };
 }
 
+function renderHeightFields(items) {
+  const bikes = items.filter(({ kind }) => kind === 'bike').flatMap(({ name, quantity }) =>
+    Array.from({ length: quantity }, (_, index) => name + ' ' + (index + 1)));
+  get('rider-heights').replaceChildren(...bikes.map((bike, index) => {
+    const field = document.createElement('div');
+    const label = document.createElement('label');
+    const input = document.createElement('input');
+    label.textContent = bikes.length === 1 ? 'Wzrost uczestnika (cm)' : 'Wzrost uczestnika — ' + bike + ' (cm)';
+    label.htmlFor = input.id = 'height-' + index;
+    input.name = 'riderHeight';
+    input.type = 'number';
+    input.min = 50;
+    input.max = 250;
+    input.step = 1;
+    input.required = true;
+    field.append(label, input);
+    return field;
+  }));
+}
+
 function restoreDraft() {
   const draft = JSON.parse(sessionStorage.getItem(draftKey) ?? '{}');
-  for (const input of get('details').querySelectorAll('input')) {
-    if (input.type === 'checkbox') input.checked = Boolean(draft[input.name]);
-    else input.value = draft[input.name] || '';
+  const heights = draft.riderHeights ?? [draft.riderHeight];
+  get('email').value = draft.email || '';
+  get('phone').value = draft.phone || '';
+  get('details').elements.acceptedTerms.checked = Boolean(draft.acceptedTerms);
+  for (const [index, input] of get('rider-heights').querySelectorAll('input').entries()) {
+    input.value = heights[index] || '';
   }
 }
 
@@ -106,7 +176,8 @@ function clearCheckout() {
 async function showCheckout(checkout) {
   stopCountdown();
   clearInterval(pendingRefresh);
-  get('selected-slot').textContent = offer.category.name + ' · ' + formatSlot(checkout);
+  const summary = checkout.items.map(({ name, quantity }) => name + ' × ' + quantity).join(', ');
+  get('selected-slot').textContent = summary + ' · ' + formatSlot(checkout);
   get('checkout-total').textContent = formatAmount(checkout.total, checkout.currency);
   if (checkout.status === 'expired' || checkout.status === 'refund_started') {
     const message = checkout.status === 'refund_started'
@@ -127,6 +198,7 @@ async function showCheckout(checkout) {
     stopCountdown = startCountdown(get('widget-payment-deadline'), checkout, refresh);
     pendingRefresh = setInterval(refresh, 1500);
   } else {
+    renderHeightFields(checkout.items);
     restoreDraft();
     showStep('details');
     stopCountdown = startCountdown(get('hold-deadline'), checkout, refresh);
@@ -167,6 +239,7 @@ async function confirmSelection(attempt) {
 
 get('slot').addEventListener('change', loadReturns);
 get('return').addEventListener('change', showPrice);
+get('equipment').addEventListener('input', showPrice);
 
 get('selection').addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -176,17 +249,18 @@ get('selection').addEventListener('submit', async (event) => {
   try {
     const slotId = get('slot').value;
     const returnAt = get('return').value;
-    const categoryId = get('category').value;
+    const items = selectedItems().filter(({ quantity }) => quantity > 0).map(({ itemId, quantity }) => ({ itemId, quantity }));
     let attempt = savedAttempt();
-    if (attempt?.slotId !== slotId || attempt.categoryId !== categoryId || attempt.returnAt !== returnAt) {
-      attempt = { requestId: crypto.randomUUID(), slotId, returnAt, shopId: offer.shop.id, categoryId };
+    if (attempt?.slotId !== slotId || attempt.shopId !== offer.shop.id || attempt.returnAt !== returnAt ||
+        JSON.stringify(attempt.items) !== JSON.stringify(items)) {
+      attempt = { requestId: crypto.randomUUID(), slotId, returnAt, shopId: offer.shop.id, items };
       sessionStorage.setItem(attemptKey, JSON.stringify(attempt));
     }
     await confirmSelection(attempt);
   } catch (error) {
     showError(error);
   } finally {
-    button.disabled = returns.length === 0;
+    showPrice();
   }
 });
 
