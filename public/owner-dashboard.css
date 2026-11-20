@@ -1,0 +1,27 @@
+#dashboard-filters {
+  display: grid;
+  grid-template-columns: minmax(12rem, 2fr) repeat(2, minmax(9rem, 1fr)) auto;
+  align-items: end;
+  gap: 0 0.75rem;
+}
+#dashboard-date-help + .error { margin: 0.75rem 0 0; }
+.dashboard-results {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+.dashboard-money, .dashboard-operations { margin: 0; padding: 0; }
+.dashboard-money > div, .dashboard-operations > li { padding: 0.65rem 0; border-bottom: 1px solid #dce5dd; }
+.dashboard-money dd { margin: 0; font-size: 1.5rem; font-weight: 750; }
+.dashboard-operations { list-style: none; }
+.dashboard-operations time { display: block; }
+.dashboard-operations small { display: block; overflow-wrap: anywhere; }
+
+@media (max-width: 52rem) {
+  #dashboard-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #dashboard-filters > :first-child, #dashboard-filters button { grid-column: 1 / -1; }
+}
+
+@media (max-width: 42rem) {
+  .dashboard-results { grid-template-columns: 1fr; }
+}

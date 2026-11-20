@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wyniki Partnera</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <link rel="stylesheet" href="/assets/owner-dashboard.css">
+  <script type="module" src="/assets/owner-dashboard.js"></script>
+</head>
+<body>
+  <main class="staff-layout">
+    <header class="booking-card">
+      <a href="/staff">Rezerwacje punktu</a>
+      <h1>Wyniki Partnera</h1>
+      <form id="dashboard-filters" aria-describedby="dashboard-date-help">
+        <div>
+          <label for="dashboard-shop">Punkt</label>
+          <select id="dashboard-shop" name="shopId"><option value="">Wszystkie punkty</option></select>
+        </div>
+        <div>
+          <label for="dashboard-from">Od daty</label>
+          <input id="dashboard-from" name="from" type="date">
+        </div>
+        <div>
+          <label for="dashboard-to">Do daty</label>
+          <input id="dashboard-to" name="to" type="date">
+        </div>
+        <button type="submit">Pokaż wyniki</button>
+      </form>
+      <p class="hint" id="dashboard-date-help">Zakres obejmuje obie daty w polskim czasie. Statusy liczymy według daty odbioru, a przedpłaty i zwroty według daty transakcji.</p>
+      <p id="error" class="error" role="alert" hidden></p>
+    </header>
+    <div id="dashboard-results" class="dashboard-results" hidden>
+      <section class="booking-card" aria-labelledby="dashboard-counts-title">
+        <h2 id="dashboard-counts-title">Statusy rezerwacji</h2>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Status</th>
+                <th scope="col">Widżet</th>
+                <th scope="col">Obsługa</th>
+                <th scope="col">Razem</th>
+              </tr>
+            </thead>
+            <tbody id="dashboard-counts"></tbody>
+          </table>
+        </div>
+      </section>
+      <section class="booking-card" aria-labelledby="dashboard-finances-title">
+        <h2 id="dashboard-finances-title">Płatności online</h2>
+        <dl class="dashboard-money">
+          <div>
+            <dt>Pobrane przedpłaty</dt>
+            <dd id="dashboard-collected"></dd>
+          </div>
+          <div>
+            <dt>Zrealizowane zwroty środków</dt>
+            <dd id="dashboard-refunded"></dd>
+          </div>
+        </dl>
+      </section>
+      <section class="booking-card" aria-labelledby="dashboard-pickups-title">
+        <h2 id="dashboard-pickups-title">Nadchodzące odbiory</h2>
+        <p id="dashboard-pickups-empty">Brak odbiorów w wybranym zakresie.</p>
+        <ul id="dashboard-pickups" class="dashboard-operations"></ul>
+      </section>
+      <section class="booking-card" aria-labelledby="dashboard-returns-title">
+        <h2 id="dashboard-returns-title">Nadchodzące zwroty sprzętu</h2>
+        <p id="dashboard-returns-empty">Brak zwrotów sprzętu w wybranym zakresie.</p>
+        <ul id="dashboard-returns" class="dashboard-operations"></ul>
+      </section>
+    </div>
+  </main>
+</body>
+</html>
