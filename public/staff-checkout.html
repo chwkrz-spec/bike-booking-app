@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Opłać rezerwację</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script type="module" src="/assets/staff-checkout.js"></script>
+</head>
+<body>
+  <main class="booking-layout">
+    <section class="booking-card" aria-labelledby="page-title">
+      <p id="shop-name" class="shop-name"></p>
+      <h1 id="page-title">Opłać rezerwację</h1>
+      <p id="error" class="error" role="alert" hidden></p>
+      <div id="checkout-summary" hidden>
+        <p id="booking-period"></p>
+        <ul id="booking-items"></ul>
+        <div class="total-line"><span>Do zapłaty</span><strong id="total"></strong></div>
+      </div>
+      <p id="checkout-status" role="status"></p>
+      <p id="checkout-deadline" class="deadline" hidden>Czas na płatność <time id="hold-deadline"></time></p>
+      <form id="staff-renter-details" hidden>
+        <div id="rider-heights"></div>
+        <details open>
+          <summary>Warunki najmu</summary>
+          <p id="terms"></p>
+        </details>
+        <label class="checkbox"><input name="acceptedTerms" type="checkbox" required> Akceptuję warunki najmu</label>
+        <button type="submit">Zapłać</button>
+      </form>
+      <a id="payment-link" class="button" hidden>Przejdź do płatności</a>
+      <a id="booking-link" class="button" hidden>Zobacz rezerwację</a>
+    </section>
+    <aside class="seller-card" id="seller" aria-labelledby="seller-title" hidden>
+      <h2 id="seller-title">Sprzedawca</h2>
+      <strong id="seller-name"></strong>
+      <p id="seller-address"></p>
+      <p id="seller-nip"></p>
+    </aside>
+  </main>
+</body>
+</html>

@@ -8,6 +8,10 @@ function showStatus(checkout) {
   const payment = get('payment');
   stopCountdown();
   payment.hidden = checkout.status !== 'payment';
+  if (checkout.checkoutUrl) {
+    get('back').href = checkout.checkoutUrl;
+    get('back').textContent = 'Wróć do rezerwacji';
+  }
   if (checkout.status === 'payment') {
     get('total').textContent = formatAmount(checkout.total, checkout.currency);
     stopCountdown = startCountdown(get('payment-deadline'), checkout, () => {
