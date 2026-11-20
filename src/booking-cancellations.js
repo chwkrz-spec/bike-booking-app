@@ -3,7 +3,7 @@ import { cancellationRefund } from './cancellation-policy.js';
 import { OperationError } from './operation-error.js';
 
 export function openBookingCancellations(db, {
-  policies, refunds, simulator, management, now, itemsForBooking, canCancelBooking,
+  policies, refunds, simulator, management, now, itemsForBooking, allocationForBooking, canCancelBooking,
 }) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS booking_links (
@@ -29,7 +29,7 @@ export function openBookingCancellations(db, {
   `);
   const readCancellation = db.prepare('SELECT * FROM booking_cancellations WHERE booking_id = ?');
   const recordCancellation = db.prepare('INSERT INTO booking_cancellations VALUES (?, ?, ?)');
-  const release = db.prepare("UPDATE checkouts SET status = 'cancelled' WHERE id = ?");
+  const release = db.prepare('UPDATE checkouts SET status = ? WHERE id = ?');
 
   function find(statement, id) {
     const booking = statement.get(id);
@@ -42,10 +42,12 @@ export function openBookingCancellations(db, {
     const cancellation = readCancellation.get(booking.booking_id);
     const refund = cancellation && refunds.getByKey(booking.payment_id, 'whole-booking-cancellation');
     const canCancel = canCancelBooking(booking) && time < booking.pickup_at;
+    const allocation = allocationForBooking(booking);
     return {
       id: booking.booking_id,
       shopName: management.publicShop(booking.shop_id).shop.name,
       items: itemsForBooking(booking),
+      ...(allocation && { allocatedItems: allocation }),
       pickupAt: new Date(booking.pickup_at).toISOString(),
       returnAt: new Date(booking.return_at).toISOString(),
       total: booking.total,
@@ -63,8 +65,16 @@ export function openBookingCancellations(db, {
     };
   }
 
-  function cancel(booking, time, source, { approvedBy, expectedRefund }) {
-    if (readCancellation.get(booking.booking_id)) return view(booking, time);
+  function canMarkNoShow(booking, time) {
+    return canCancelBooking(booking) && time >= booking.pickup_at + policies.agreed(booking).noShowGraceMinutes * 60_000;
+  }
+
+  function cancel(booking, time, source, { approvedBy, expectedRefund } = {}) {
+    const previous = readCancellation.get(booking.booking_id);
+    if (previous && (previous.source === 'no-show') === (source === 'no-show')) return view(booking, time);
+    if (source === 'no-show' && !canMarkNoShow(booking, time)) {
+      throw new OperationError(409, 'Nie można oznaczyć No-Show przed upływem czasu oczekiwania lub po wydaniu sprzętu.');
+    }
     if (!canCancelBooking(booking) || (source === 'renter' && time >= booking.pickup_at)) {
       throw new OperationError(409, 'Nie można anulować tej rezerwacji.');
     }
@@ -79,8 +89,9 @@ export function openBookingCancellations(db, {
       });
     }
     recordCancellation.run(booking.booking_id, source, time);
-    release.run(booking.id);
-    return view({ ...booking, status: 'cancelled' }, time);
+    const status = source === 'no-show' ? 'no_show' : 'cancelled';
+    release.run(status, booking.id);
+    return view({ ...booking, status }, time);
   }
 
   return {
@@ -101,12 +112,19 @@ export function openBookingCancellations(db, {
       }
       return cancel(booking, now(), 'partner', { approvedBy: actor.username });
     },
-    staffSummary(actor, booking) {
+    markNoShow(actor, shopId, id) {
+      management.accessible(actor, shopId);
+      const booking = find(staffBooking, id);
+      if (booking.shop_id !== shopId) throw new OperationError(404, 'Nie znaleziono rezerwacji.');
+      return cancel(booking, now(), 'no-show');
+    },
+    staffSummary(actor, booking, time) {
       const { canRefund } = management.accessible(actor, booking.shop_id);
       const refund = booking.status === 'cancelled' && refunds.getByKey(booking.payment_id, 'whole-booking-cancellation');
       return {
         canCancel: canRefund && canCancelBooking(booking),
-        ...(booking.status === 'cancelled' && { cancellationRefund: refund?.amount ?? 0 }),
+        canMarkNoShow: canMarkNoShow(booking, time),
+        ...(['cancelled', 'no_show'].includes(booking.status) && { cancellationRefund: refund?.amount ?? 0 }),
       };
     },
     staffRefunds(actor, id) {

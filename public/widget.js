@@ -191,10 +191,10 @@ async function showCheckout(checkout) {
     await selection();
     showStep('selection');
     showError(new Error(message));
-  } else if (['confirmed', 'cancelled'].includes(checkout.status)) {
+  } else if (['confirmed', 'cancelled', 'no_show'].includes(checkout.status)) {
     const message = await request('/api/checkouts/' + checkout.id + '/confirmation');
-    get('confirmation-heading').textContent = checkout.status === 'cancelled'
-      ? 'Rezerwacja anulowana' : 'Rezerwacja potwierdzona';
+    const labels = { confirmed: 'Rezerwacja potwierdzona', cancelled: 'Rezerwacja anulowana', no_show: 'Sprzęt nieodebrany' };
+    get('confirmation-heading').textContent = labels[checkout.status];
     get('manage-booking').href = message.bookingUrl;
     get('booking-number').textContent = 'Numer rezerwacji ' + message.bookingId;
     get('confirmation-email').textContent = message.to;

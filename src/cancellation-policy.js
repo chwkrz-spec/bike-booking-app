@@ -90,6 +90,7 @@ export function openCancellationPolicies(db, management) {
 }
 
 export function cancellationRefund(booking, policy, time, source) {
+  if (source === 'no-show') return 0;
   if (source === 'partner' || time < Date.parse(policy.freeCancellationCutoff)) return booking.total;
   return Math.round(booking.total * policy.lateRefundPercent / 100);
 }

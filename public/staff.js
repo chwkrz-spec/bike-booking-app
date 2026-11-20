@@ -1,5 +1,5 @@
 import { formatAmount, formatSlot, get, request, showError } from './common.js';
-import { pickupControls, stockForms } from './staff-equipment.js';
+import { equipmentOperations, pickupControls, stockForms } from './staff-equipment.js';
 
 import { setupWidgets, showWidgetShops } from './staff-widgets.js';
 
@@ -12,7 +12,7 @@ const shopForm = get('shop-settings');
 const partnerForm = get('partner-settings');
 const policyForm = get('cancellation-policy');
 const policyPath = '/api/staff/cancellation-policy';
-const bookingStatus = { confirmed: 'Potwierdzona', cancelled: 'Anulowana' };
+const bookingStatus = { confirmed: 'Potwierdzona', cancelled: 'Anulowana', no_show: 'No-Show' };
 const assignmentForm = get('assignment');
 let owner;
 let members = [];
@@ -28,13 +28,13 @@ function cell(row, ...values) {
   return element;
 }
 
-function displayBookings(bookings) {
+function displayBookings(bookings, stock) {
   const list = get('reservations');
   list.replaceChildren();
   for (const booking of bookings) {
     const row = list.insertRow();
     cell(row, formatSlot(booking));
-    cell(row, ...booking.items.map(({ name, quantity }) => name + ' × ' + quantity));
+    cell(row, ...booking.allocatedItems.map(({ name, quantity }) => name + ' × ' + quantity));
     cell(row, booking.email, booking.phone);
     cell(row, ...booking.riderHeights.map((height) => height + ' cm'));
     cell(row, formatAmount(booking.total, booking.currency));
@@ -60,6 +60,7 @@ function displayBookings(bookings) {
     }
     const pickup = pickupControls(booking, saves, refreshShop);
     if (pickup) status.append(pickup);
+    status.append(equipmentOperations(booking, stock, saves, refreshShop));
   }
   get('list').hidden = bookings.length === 0;
   get('empty').hidden = bookings.length !== 0;
@@ -131,8 +132,8 @@ async function refreshShop() {
       request(staffShopPath('bookings')), request(staffShopPath('stock')), request(staffShopPath('settings')),
     ]);
     if (selected !== viewingShop) return;
-    displayBookings(bookings);
-    get('staff-stock').replaceChildren(...stockForms(stock, staffShopPath('stock'), saves));
+    displayBookings(bookings, stock);
+    get('staff-stock').replaceChildren(...stockForms(stock, staffShopPath('stock'), saves, refreshShop));
     displaySettings(settings);
     get('shop-admin').hidden = false;
   } catch (error) {
@@ -165,6 +166,7 @@ async function refreshShops(selected = shopSelect.value) {
     if (shops.some(({ id }) => id === selected)) select.value = selected;
   }
   shopSelect.hidden = get('staff-shop-label').hidden = shops.length === 0;
+  get('refresh-bookings').hidden = shops.length === 0;
   get('no-shops').hidden = shops.length > 0;
   if (owner) {
     showWidgetShops(shops);
@@ -258,3 +260,5 @@ try {
 } catch (error) {
   showError(error);
 }
+
+get('refresh-bookings').addEventListener('click', refreshShop);

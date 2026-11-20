@@ -7,18 +7,19 @@ let expectedRefund;
 function display(booking) {
   expectedRefund = booking.cancellationRefund;
   get('booking').hidden = false;
-  get('booking-status').textContent = booking.status === 'cancelled' ? 'Rezerwacja anulowana' : 'Rezerwacja potwierdzona';
+  const labels = { confirmed: 'Rezerwacja potwierdzona', cancelled: 'Rezerwacja anulowana', no_show: 'Sprzęt nieodebrany' };
+  get('booking-status').textContent = labels[booking.status];
   get('booking-number').textContent = 'Numer rezerwacji ' + booking.id;
   get('shop-name').textContent = booking.shopName;
   get('rental-period').textContent = formatSlot(booking);
-  get('rental-items').textContent = booking.items.map(({ name, quantity }) => name + ' · ' + quantity + ' szt.').join(', ');
+  get('rental-items').textContent = (booking.allocatedItems ?? booking.items).map(({ name, quantity }) => name + ' · ' + quantity + ' szt.').join(', ');
   get('rental-total').textContent = formatAmount(booking.total, booking.currency);
   get('terms').textContent = booking.terms;
   get('accepted-at').textContent = 'Data akceptacji warunków ' + formatInstant(booking.termsAcceptedAt);
   get('cancellation-cutoff').textContent = 'Pełny zwrot przy anulowaniu przed ' + formatInstant(booking.freeCancellationCutoff);
   get('cancel-booking').hidden = !booking.canCancel;
   get('refund-explanation').hidden = booking.cancellationRefund === undefined;
-  get('refund-label').textContent = booking.status === 'cancelled' ? 'Zwrot po anulowaniu' : 'Zwrot przy anulowaniu teraz';
+  get('refund-label').textContent = booking.canCancel ? 'Zwrot przy anulowaniu teraz' : 'Zwrot przedpłaty';
   if (booking.cancellationRefund !== undefined) {
     get('refund-total').textContent = formatAmount(booking.cancellationRefund, booking.currency);
   }

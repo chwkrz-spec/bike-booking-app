@@ -17,6 +17,7 @@ function showStatus(checkout) {
     const messages = {
       confirmed: 'Płatność zweryfikowana',
       cancelled: 'Rezerwacja anulowana.',
+      no_show: 'Sprzęt nieodebrany.',
       refund_started: 'Nie możemy zrealizować Twojej rezerwacji. Zleciliśmy pełny zwrot płatności.',
     };
     get('payment-status').textContent = messages[checkout.status] ?? 'Okno płatności wygasło.';
