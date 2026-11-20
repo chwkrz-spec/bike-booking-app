@@ -33,7 +33,11 @@ test('Tylko jeden koszyk zajmuje ostatni kask, a przegrany nie blokuje pozostał
   assert.equal((await hold(app, id, nextMorning, attempts[1 - failed])).status, 409);
 
   const otherShop = await post(app, '/api/staff/shops', { name: 'Punkt testowy' }, staffHeaders);
-  assert.equal((await hold(app, otherShop.body.id, overnight, attempts[1 - failed])).status, 201);
+  const occupiedItems = attempts[1 - failed];
+  for (const item of occupiedItems) {
+    assert.equal((await post(app, '/api/staff/shops/' + otherShop.body.id + '/stock', item, staffHeaders)).status, 200);
+  }
+  assert.equal((await hold(app, otherShop.body.id, overnight, occupiedItems)).status, 201);
 });
 
 test('Dostępność uwzględnia szczyt zajętości i bufor między kolejnymi odbiorami', async (t) => {

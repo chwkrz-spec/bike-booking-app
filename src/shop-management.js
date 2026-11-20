@@ -192,7 +192,9 @@ export function openShopManagement(db, { staffPassword, demoOwners = [], transac
     for (const { item_id, item } of selectCatalog.all(shopId)) {
       catalog.set(item_id, { stock: catalog.get(item_id)?.stock ?? 0, ...JSON.parse(item) });
     }
-    return [...catalog.values()].map(({ stock, ...item }) => ({ ...item, quantity: quantities.get(item.id) ?? stock }));
+    return [...catalog.values()].map(({ stock, ...item }) => ({
+      ...item, quantity: quantities.get(item.id) ?? (shopId === shop.id ? stock : 0),
+    }));
   }
 
   function accessible(actor, shopId) {

@@ -48,6 +48,12 @@ async function booking(app, { shopId = 'warszawa-demo', slotId, returnAt, channe
   return { checkoutId: checkout.id, id: confirmed.body.bookingId };
 }
 
+async function stockTouringBike(app, shop, headers) {
+  assert.equal((await post(app, '/api/staff/shops/' + shop.body.id + '/stock', {
+    itemId: 'rower-turystyczny', quantity: 1,
+  }, headers)).status, 200);
+}
+
 const at = (day, time) => '2027-01-' + day + 'T' + time + ':00.000Z';
 
 test('Statusy obu kanałów i harmonogram odzwierciedlają daty operacji, punkt i No-Show', async (t) => {
@@ -57,6 +63,8 @@ test('Statusy obu kanałów i harmonogram odzwierciedlają daty operacji, punkt 
   });
   const additional = await post(app, '/api/staff/shops', { name: 'Drugi punkt' }, owner);
   const otherPartner = await post(app, '/api/staff/shops', { name: 'Obcy punkt' }, foreign);
+  await stockTouringBike(app, additional, owner);
+  await stockTouringBike(app, otherPartner, foreign);
   const missed = await booking(app, { slotId: at(15, '14:00'), returnAt: at(15, '15:00') });
   const assigned = await booking(app, { slotId: at(15, '15:00'), returnAt: at(15, '16:00') });
   const rental = await booking(app, {
@@ -109,6 +117,8 @@ test('Przedpłaty i pełne oraz częściowe zwroty mają własne daty w czasie p
   });
   const other = await post(app, '/api/staff/shops', { name: 'Drugi punkt' }, owner);
   const outside = await post(app, '/api/staff/shops', { name: 'Obcy punkt' }, foreign);
+  await stockTouringBike(app, other, owner);
+  await stockTouringBike(app, outside, foreign);
   const full = await booking(app, { slotId: at(17, '12:00'), returnAt: at(17, '13:00') });
   const partial = await booking(app, {
     channel: 'staff', shopId: other.body.id, slotId: at(17, '12:00'), returnAt: at(17, '14:00'),

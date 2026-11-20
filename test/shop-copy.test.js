@@ -31,6 +31,7 @@ test('Właściciel kopiuje konfigurację punktu, a jego widżet stosuje własną
   assert.equal((await configure(source, 'stock', { itemId: seat.id, quantity: 4 })).status, 200);
   assert.equal((await configure(source, 'stock', { itemId: bikeId, quantity: 8 })).status, 200);
   assert.equal((await configure(destination.id, 'stock', { itemId: bikeId, quantity: 2 })).status, 200);
+  assert.equal((await configure(destination.id, 'stock', { itemId: 'rower-dzieciecy', quantity: 1 })).status, 200);
   const { body: basket } = await configure(destination.id, 'catalog', {
     kind: 'accessory', name: 'Koszyk', bookingRate: 300,
   });

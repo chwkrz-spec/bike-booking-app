@@ -46,9 +46,20 @@ test('Właściciel zarządza swoimi punktami i przyznaje uprawnienie do zwrotów
   assert.equal(currentStock.find(({ id }) => id === 'kask').quantity, 1);
 
   const selection = app.selection((await app.request('/api/offer')).body);
+  const foreignOffer = await app.request('/api/offer?shopId=' + foreignShop.body.id);
+  assert.equal(foreignOffer.status, 200);
+  assert.deepEqual(foreignOffer.body.slots, []);
+  assert.ok(foreignOffer.body.equipment.length > 0);
+  assert.ok(foreignOffer.body.equipment.every(({ quantity }) => quantity === 0));
+  const foreignSelection = { ...selection, shopId: foreignShop.body.id };
+  assert.equal((await app.request('/api/checkouts', { method: 'POST', body: foreignSelection })).status, 409);
+  assert.equal((await post(app, staffRoute(foreignShop.body.id, 'stock'), {
+    itemId: selection.categoryId, quantity: 1,
+  }, outsider)).status, 200);
+
   const checkout = (await app.request('/api/checkouts', { method: 'POST', body: selection })).body;
   assert.equal((await app.request('/api/checkouts', {
-    method: 'POST', body: { ...selection, shopId: foreignShop.body.id },
+    method: 'POST', body: foreignSelection,
   })).status, 201);
   const payment = (await app.request('/api/checkouts/' + checkout.id + '/payment', { method: 'POST', body: {
     email: 'renter@example.test', phone: '+48 500 123 456', riderHeight: 178, acceptedTerms: true,

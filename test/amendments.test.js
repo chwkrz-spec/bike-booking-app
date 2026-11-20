@@ -181,3 +181,42 @@ test('Po zamianie roweru przy odbiorze zwrot nadal odnosi się do pierwotnie op�
   const { body: [updated] } = await app.request(shop + '/bookings', { headers: owner });
   assert.deepEqual(updated.allocatedItems.map(({ itemId, quantity }) => [itemId, quantity]), [[child, 1]]);
 });
+
+test('Anulowanie przez Partnera uzupełnia pełny zwrot po odrzuceniu oczekującego zwrotu przy odbiorze', async (t) => {
+  const app = await startTestApp(t, { date: '2027-01-16T08:00:00.000Z', allowSimulatedRefunds: true });
+  await configure(app, allDay, { hourlyRate: 2_000, dayRate: null, fullDayRate: 10_000 });
+  const booking = await book(app, twoBikes);
+  app.advance(60);
+  const path = amendment(booking.bookingId);
+  const removedItems = [{ itemId: tour, quantity: 1 }];
+  const { body: review } = await post(app, path + '/preview', { removedItems }, owner);
+  const approval = await post(app, path, {
+    removedItems, charges: review.eligibleCharges.map(({ id, quantity }) => ({ id, quantity })),
+    revision: review.revision, expectedRefund: 24_000, renterAgreed: true,
+  }, owner);
+  assert.equal(approval.status, 200);
+  assert.equal(approval.body.refund.status, 'pending');
+  const cancelPath = '/api/staff/bookings/' + booking.bookingId + '/cancel';
+  const initial = await post(app, cancelPath, {}, owner);
+  assert.equal(initial.status, 200);
+  assert.equal(initial.body.cancellationRefund, initial.body.total - 24_000);
+
+  const resolvePath = '/api/simulator/refunds/' + approval.body.refund.id;
+  const resolutions = await Promise.all([
+    post(app, resolvePath, { status: 'failed' }), post(app, resolvePath, { status: 'failed' }),
+  ]);
+  assert.deepEqual(resolutions.map(({ body }) => body.status), ['failed', 'failed']);
+
+  const { body: history } = await app.request(historyPath(booking.bookingId), { headers: owner });
+  assert.deepEqual(history.map(({ reason, status, amount }) => [reason, status, amount]), [
+    ['pickup-amendment', 'failed', 24_000],
+    ['partner-cancellation', 'completed', initial.body.total - 24_000],
+    ['partner-cancellation', 'completed', 24_000],
+  ]);
+  const completed = history.filter(({ status }) => status === 'completed');
+  assert.equal(completed.reduce((sum, entry) => sum + entry.platformDebit, 0), completed[0].originalCommission);
+  assert.equal((await post(app, cancelPath, {}, owner)).body.cancellationRefund, initial.body.total);
+  const { body: confirmation } = await app.request(booking.checkout + '/confirmation');
+  const { body: renterView } = await app.request('/api' + confirmation.bookingUrl.replace('/booking/', '/bookings/'));
+  assert.equal(renterView.cancellationRefund, initial.body.total);
+});

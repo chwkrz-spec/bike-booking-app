@@ -33,6 +33,11 @@ export function openBookingCancellations(db, {
   `);
   const readCancellation = db.prepare('SELECT * FROM booking_cancellations WHERE booking_id = ?');
   const recordCancellation = db.prepare('INSERT INTO booking_cancellations VALUES (?, ?, ?)');
+  const partnerCancelled = db.prepare(`
+    SELECT c.total FROM booking_cancellations cancellation
+    JOIN bookings b ON b.id = cancellation.booking_id JOIN checkouts c ON c.id = b.checkout_id
+    WHERE b.payment_id = ? AND cancellation.source = 'partner'
+  `);
   const release = db.prepare('UPDATE checkouts SET status = ? WHERE id = ?');
 
   function find(statement, id) {
@@ -41,10 +46,18 @@ export function openBookingCancellations(db, {
     return amendedBooking(booking);
   }
 
+  function cancellationRefunds(paymentId, source) {
+    return refunds.history(paymentId).filter((refund) => refund.reason === source + '-cancellation');
+  }
+
+  function refundedAmount(entries) {
+    return entries.reduce((total, refund) => total + refund.amount, 0);
+  }
+
   function view(booking, time, language = 'pl') {
     const policy = policies.agreed(booking);
     const cancellation = readCancellation.get(booking.booking_id);
-    const refund = cancellation && refunds.getByKey(booking.payment_id, 'whole-booking-cancellation');
+    const entries = cancellation && cancellationRefunds(booking.payment_id, cancellation.source);
     const canCancel = canCancelBooking(booking) && time < booking.pickup_at;
     const allocation = allocationForBooking(booking);
     return {
@@ -64,8 +77,8 @@ export function openBookingCancellations(db, {
       ...(cancellation && {
         cancelledAt: new Date(cancellation.cancelled_at).toISOString(),
         cancellationSource: cancellation.source,
-        cancellationRefund: refund?.amount ?? 0,
-        ...(refund && { refundStatus: refund.status }),
+        cancellationRefund: refundedAmount(entries),
+        ...(entries.length && { refundStatus: entries.at(-1).status }),
       }),
     };
   }
@@ -101,6 +114,17 @@ export function openBookingCancellations(db, {
   }
 
   return {
+    coverFailedRefund(refund, time) {
+      const { paymentId } = refund;
+      const cancellation = partnerCancelled.get(paymentId);
+      if (!cancellation) return;
+      const amount = refunds.remaining(paymentId, cancellation.total);
+      if (amount === 0) return;
+      refunds.start(simulator.get(paymentId), {
+        key: 'partner-cancellation-after-failure:' + refund.id, reason: 'partner-cancellation', amount, time,
+        approvedBy: refunds.getByKey(paymentId, 'whole-booking-cancellation')?.approvedBy,
+      });
+    },
     privateUrl(bookingId) {
       if (!tokenByBooking.get(bookingId)) saveToken.run(bookingId, randomUUID());
       return '/booking/' + tokenByBooking.get(bookingId).token;
@@ -128,12 +152,12 @@ export function openBookingCancellations(db, {
     staffSummary(actor, booking, time) {
       const { canRefund } = management.accessible(actor, booking.shop_id);
       const canCancel = canRefund && canCancelBooking(booking);
-      const refund = booking.status === 'cancelled' && refunds.getByKey(booking.payment_id, 'whole-booking-cancellation');
+      const cancellation = readCancellation.get(booking.booking_id);
       return {
         canCancel,
         ...(canCancel && { partnerCancellationRefund: refunds.remaining(booking.payment_id, booking.total) }),
         canMarkNoShow: canMarkNoShow(booking, time),
-        ...(['cancelled', 'no_show'].includes(booking.status) && { cancellationRefund: refund?.amount ?? 0 }),
+        ...(cancellation && { cancellationRefund: refundedAmount(cancellationRefunds(booking.payment_id, cancellation.source)) }),
       };
     },
     staffRefunds(actor, id) {

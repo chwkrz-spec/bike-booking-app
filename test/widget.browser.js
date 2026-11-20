@@ -106,3 +106,34 @@ test('Okno płatności pokazuje informację o pełnym zwrocie po spóźnionej we
   await page.getByRole('status').filter({ hasText: 'Zleciliśmy pełny zwrot płatności.' }).waitFor({ timeout: 3000 });
   assert.equal(await page.getByRole('button', { name: 'Zasymuluj płatność' }).isVisible(), false);
 });
+
+test('Odświeżenie symulatora po utracie odpowiedzi pokazuje potwierdzoną płatność', async (t) => {
+  const app = await startTestApp(t);
+  const { body: offer } = await app.request('/api/offer');
+  const { body: hold } = await app.request('/api/checkouts', { method: 'POST', body: app.selection(offer) });
+  const checkoutPath = '/api/checkouts/' + hold.id;
+  const { body: payment } = await app.request(checkoutPath + '/payment', {
+    method: 'POST',
+    body: { email: 'pilot@example.test', phone: '+48 500 123 456', riderHeight: 176, acceptedTerms: true },
+  });
+
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ locale: 'pl-PL' });
+  await page.goto(app.origin + payment.paymentUrl);
+  const simulatorAction = /\/api\/simulator\/payments\/[\w-]+\/(?:pay|complete)$/;
+  await page.route(simulatorAction, async (route) => {
+    const response = await route.fetch();
+    assert.equal(response.status(), 200);
+    await route.abort('failed');
+  }, { times: 1 });
+  const interrupted = page.waitForEvent('requestfailed', (request) => simulatorAction.test(request.url()));
+  await page.getByRole('button', { name: 'Zasymuluj płatność' }).click();
+  await interrupted;
+
+  await page.reload();
+  await page.getByText('Płatność zweryfikowana', { exact: true }).waitFor({ timeout: 3000 });
+  const confirmation = await app.request(checkoutPath + '/confirmation');
+  assert.equal(confirmation.status, 200);
+  assert.equal(confirmation.body.to, 'pilot@example.test');
+});

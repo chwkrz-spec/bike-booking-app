@@ -222,10 +222,13 @@ export function createApp({
       if (method === 'GET' && confirmation) return json(response, 200, booking.confirmation(confirmation[1]));
       const paymentFailure = path.match(/^\/api\/checkouts\/([\w-]+)\/payment-failure$/);
       if (method === 'GET' && paymentFailure) return json(response, 200, booking.paymentFailure(paymentFailure[1]));
-      const simulated = path.match(/^\/api\/simulator\/payments\/([\w-]+)(\/pay)?$/);
+      const simulated = path.match(/^\/api\/simulator\/payments\/([\w-]+)(?:\/(pay|complete))?$/);
       if (simulated && method === 'GET' && !simulated[2]) return json(response, 200, booking.paymentSession(simulated[1]));
-      if (simulated && method === 'POST' && simulated[2]) {
+      if (method === 'POST' && simulated?.[2] === 'pay') {
         return json(response, 200, booking.simulatePayment(simulated[1], await body(request)));
+      }
+      if (method === 'POST' && simulated?.[2] === 'complete') {
+        return json(response, 200, booking.completeSimulatedPayment(simulated[1]));
       }
       const refundResolution = path.match(/^\/api\/simulator\/refunds\/([\w-]+)$/);
       if (allowSimulatedRefunds && refundResolution && method === 'POST') {

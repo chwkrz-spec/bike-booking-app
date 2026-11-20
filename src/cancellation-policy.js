@@ -42,6 +42,10 @@ export function openCancellationPolicies(db, management) {
       partner_id TEXT PRIMARY KEY REFERENCES partners(id),
       settings TEXT NOT NULL
     ) STRICT;
+    CREATE TABLE IF NOT EXISTS checkout_terms_snapshots (
+      checkout_id TEXT PRIMARY KEY REFERENCES checkouts(id),
+      terms_version TEXT NOT NULL
+    ) STRICT;
     CREATE TABLE IF NOT EXISTS cancellation_terms (
       checkout_id TEXT PRIMARY KEY REFERENCES checkouts(id),
       free_cancellation_cutoff INTEGER NOT NULL,
@@ -49,6 +53,8 @@ export function openCancellationPolicies(db, management) {
       no_show_grace_minutes INTEGER NOT NULL
     ) STRICT;
   `);
+  const snapshot = db.prepare('SELECT terms_version FROM checkout_terms_snapshots WHERE checkout_id = ?');
+  const saveSnapshot = db.prepare('INSERT INTO checkout_terms_snapshots VALUES (?, ?)');
   const read = db.prepare('SELECT * FROM cancellation_terms WHERE checkout_id = ?');
   const save = db.prepare('INSERT INTO cancellation_terms VALUES (?, ?, ?, ?)');
 
@@ -73,6 +79,9 @@ export function openCancellationPolicies(db, management) {
 
   return {
     quote,
+    rememberInitialTerms(checkoutId, shopId, channel, language) {
+      saveSnapshot.run(checkoutId, quote(shopId, channel, language).termsVersion);
+    },
     settings(actor, input) {
       if (actor.role !== 'owner') throw new OperationError(403, 'Ta operacja wymaga uprawnień właściciela.');
       const current = readPolicy(actor.partnerId);
@@ -92,7 +101,8 @@ export function openCancellationPolicies(db, management) {
     accept(checkout, termsVersion, channel, language) {
       validateLanguage(management.publicShop(checkout.shop_id).shop, language);
       const { terms, termsVersion: expected, policy } = quote(checkout.shop_id, channel, language);
-      if (termsVersion !== undefined && termsVersion !== expected) {
+      const displayed = termsVersion === undefined ? snapshot.get(checkout.id)?.terms_version : termsVersion;
+      if (displayed !== expected) {
         throw new OperationError(409, 'Warunki najmu się zmieniły. Zapoznaj się z nimi ponownie.');
       }
       save.run(checkout.id, checkout.pickup_at - policy.freeCancellationMinutes * minute,

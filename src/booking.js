@@ -465,27 +465,32 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     return { ...state, total, revision, quoteVersion, priceDifference: total - row.total, canApprove: total === row.total };
   }
 
+  function persistHold({ shopId, pickupAt, returnAt, total, items }, time, { requestId, channel, language }) {
+    const id = randomUUID();
+    const firstBike = items.find(({ kind }) => kind === 'bike').itemId;
+    insertCheckout.run(id, requestId ?? null, shopId, firstBike, pickupAt, returnAt, total, time + holdDuration);
+    insertCart.run(id, JSON.stringify(items));
+    if (language !== 'pl') storeLanguage.run(id, language);
+    policies.rememberInitialTerms(id, shopId, channel, language);
+    return checkout(id);
+  }
+
   function reserveSelection({ shopId, categoryId, slotId, returnAt, items }, time, {
-    requestId, channelNoticeMinutes, excludeCheckoutId, language = 'pl',
+    requestId, channel = 'widget', excludeCheckoutId, language = 'pl',
   } = {}) {
     const inventory = management.inventory(shopId);
     const selected = selectionItems(items, categoryId, inventory);
     const { settings } = management.publicShop(shopId);
-    const calendar = bookingCalendar(settings, time, channelNoticeMinutes);
+    const calendar = bookingCalendar(settings, time, channel === 'staff' ? staffNoticeMinutes : undefined);
     const slot = calendar.selection(slotId, returnAt);
     if (!slot) throw new OperationError(400, 'Wybierz termin z aktualnej oferty.');
     const quantitiesFor = availability(shopId, inventory, time, settings.turnaroundBufferMinutes, excludeCheckoutId);
     if (!available(selected, quantitiesFor(slot))) {
       throw new OperationError(409, 'Wybrany sprzęt jest już zajęty w tym terminie.');
     }
-    const id = randomUUID();
     const cart = pricingForPickup(calendar, slot.pickupAt, inventory).cart(slot.returnAt, selected);
     const total = cart.reduce((sum, item) => sum + item.quantity * item.unitTotal, 0);
-    const firstBike = cart.find(({ kind }) => kind === 'bike').itemId;
-    insertCheckout.run(id, requestId ?? null, shopId, firstBike, slot.pickupAt, slot.returnAt, total, time + holdDuration);
-    insertCart.run(id, JSON.stringify(cart));
-    if (language !== 'pl') storeLanguage.run(id, language);
-    return checkout(id);
+    return persistHold({ shopId, ...slot, total, items: cart }, time, { requestId, channel, language });
   }
 
   function staffPaymentLink(shopId, id) {
@@ -569,6 +574,45 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         };
       }),
     };
+  }
+
+  function reconcilePayment(id, time) {
+    const payment = simulator.get(id);
+    const current = checkout(payment.checkout_id);
+    const existing = selectBooking.get(id);
+    if (existing) return { status: current.status, bookingId: existing.id };
+    if (current.status === 'refund_started') return { status: current.status, refundId: simulator.refund(id).id };
+
+    const expired = current.deadline <= time;
+    if (!simulator.verify(id)) return { status: checkoutSummary(current, time).status };
+    const startedRefund = simulator.refund(id);
+    const originalSlot = { pickupAt: current.pickup_at, returnAt: current.return_at };
+    const canConfirm = () => {
+      const { settings } = management.publicShop(current.shop_id);
+      const inventory = management.inventory(current.shop_id);
+      const quantitiesFor = availability(current.shop_id, inventory, time, settings.turnaroundBufferMinutes, current.id);
+      return available(savedItems(current), quantitiesFor(originalSlot));
+    };
+    if (startedRefund || current.status === 'replaced' || (expired && originalSlot.pickupAt <= time) || !canConfirm()) {
+      const refund = startedRefund ?? simulator.startFullRefund(id, time);
+      refundCheckout.run(current.id);
+      const english = languageOf(current) === 'en';
+      insertFailureMessage.run(id, current.email, english ? 'Booking payment refund' : 'Zwrot płatności za rezerwację',
+        english ? 'We cannot fulfil your booking. We have initiated a full refund.'
+          : 'Nie możemy zrealizować Twojej rezerwacji. Zleciliśmy pełny zwrot płatności.');
+      return { status: 'refund_started', refundId: refund.id };
+    }
+
+    const bookingId = randomUUID();
+    insertBooking.run(bookingId, current.id, id, time);
+    verifyPayment.run(id);
+    confirmCheckout.run(current.id);
+    const bookingUrl = cancellations.privateUrl(bookingId);
+    const english = languageOf(current) === 'en';
+    const content = english ? 'We confirmed booking ' + bookingId + '.\nBooking details and cancellation: '
+      : 'Potwierdziliśmy rezerwację ' + bookingId + '.\nSzczegóły i anulowanie rezerwacji: ';
+    insertMessage.run(bookingId, current.email, english ? 'Booking confirmation' : 'Potwierdzenie rezerwacji', content + bookingUrl);
+    return { status: 'confirmed', bookingId };
   }
 
   const ownerDashboard = openOwnerDashboard(db, {
@@ -673,7 +717,12 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
       });
     },
     simulateRefundResolution(id, input) {
-      return transaction(() => refunds.resolve(id, input.status, now()));
+      return transaction(() => {
+        const time = now();
+        const refund = refunds.resolve(id, input.status, time);
+        if (refund.status === 'failed') cancellations.coverFailedRefund(refund, time);
+        return refund;
+      });
     },
     widgets: openWidgets(db),
     staffOffer(actor, shopId, pickupAt, replacingId) {
@@ -711,7 +760,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         if (original) requireReplaceable(original.row);
         assisted.validateLanguage(shopId, language);
         const row = reserveSelection(selection, time, {
-          requestId: key, channelNoticeMinutes: staffNoticeMinutes, excludeCheckoutId: replacingId, language,
+          requestId: key, channel: 'staff', excludeCheckoutId: replacingId, language,
         });
         const { shop } = management.publicShop(shopId);
         assisted.enqueue(actor, checkoutSummary(row, time), shop, email, language);
@@ -772,12 +821,10 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         if (current.status !== 'reconfirm' || quoteVersion !== current.quoteVersion) {
           throw new OperationError(409, 'Dostępność lub cena uległa zmianie. Sprawdź aktualną ofertę.');
         }
-        const id = randomUUID();
-        insertCheckout.run(id, null, current.shopId, current.categoryId, Date.parse(current.pickupAt),
-          Date.parse(current.returnAt), current.total, time + holdDuration);
-        insertCart.run(id, JSON.stringify(current.items));
-        if (current.language !== 'pl') storeLanguage.run(id, current.language);
-        resumes.replace(session.id, id);
+        const row = persistHold({
+          ...current, pickupAt: Date.parse(current.pickupAt), returnAt: Date.parse(current.returnAt),
+        }, time, { channel: 'widget', language: current.language });
+        resumes.replace(session.id, row.id);
         return resumeState(resumes.read(token, time), time);
       });
     },
@@ -830,6 +877,13 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     simulatePayment(id, input) {
       return transaction(() => simulator.pay(id, now(), input));
     },
+    completeSimulatedPayment(id) {
+      return transaction(() => {
+        const time = now();
+        simulator.pay(id, time, {});
+        return reconcilePayment(id, time);
+      });
+    },
     simulateRefund(id) {
       return transaction(() => simulator.startFullRefund(id, now()));
     },
@@ -837,45 +891,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
       if (typeof id !== 'string' || !uuid.test(id)) {
         throw new OperationError(400, 'Nieprawidłowy identyfikator płatności.');
       }
-      return transaction(() => {
-        const payment = simulator.get(id);
-        const current = checkout(payment.checkout_id);
-        const existing = selectBooking.get(id);
-        if (existing) return { status: current.status, bookingId: existing.id };
-        if (current.status === 'refund_started') return { status: current.status, refundId: simulator.refund(id).id };
-
-        const time = now();
-        const expired = current.deadline <= time;
-        if (!simulator.verify(id)) return { status: checkoutSummary(current, time).status };
-        const startedRefund = simulator.refund(id);
-        const originalSlot = { pickupAt: current.pickup_at, returnAt: current.return_at };
-        const canConfirm = () => {
-          const { settings } = management.publicShop(current.shop_id);
-          const inventory = management.inventory(current.shop_id);
-          const quantitiesFor = availability(current.shop_id, inventory, time, settings.turnaroundBufferMinutes, current.id);
-          return available(savedItems(current), quantitiesFor(originalSlot));
-        };
-        if (startedRefund || current.status === 'replaced' || (expired && originalSlot.pickupAt <= time) || !canConfirm()) {
-          const refund = startedRefund ?? simulator.startFullRefund(id, time);
-          refundCheckout.run(current.id);
-          const english = languageOf(current) === 'en';
-          insertFailureMessage.run(id, current.email, english ? 'Booking payment refund' : 'Zwrot płatności za rezerwację',
-            english ? 'We cannot fulfil your booking. We have initiated a full refund.'
-              : 'Nie możemy zrealizować Twojej rezerwacji. Zleciliśmy pełny zwrot płatności.');
-          return { status: 'refund_started', refundId: refund.id };
-        }
-
-        const bookingId = randomUUID();
-        insertBooking.run(bookingId, current.id, id, time);
-        verifyPayment.run(id);
-        confirmCheckout.run(current.id);
-        const bookingUrl = cancellations.privateUrl(bookingId);
-        const english = languageOf(current) === 'en';
-        const content = english ? 'We confirmed booking ' + bookingId + '.\nBooking details and cancellation: '
-          : 'Potwierdziliśmy rezerwację ' + bookingId + '.\nSzczegóły i anulowanie rezerwacji: ';
-        insertMessage.run(bookingId, current.email, english ? 'Booking confirmation' : 'Potwierdzenie rezerwacji', content + bookingUrl);
-        return { status: 'confirmed', bookingId };
-      });
+      return transaction(() => reconcilePayment(id, now()));
     },
     confirmation(id) {
       const message = selectMessage.get(id);

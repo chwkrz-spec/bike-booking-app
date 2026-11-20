@@ -96,6 +96,9 @@ test('Tylko pracownik przypisany do punktu lub właściciel może wysłać link 
   assert.equal(without.status, 401);
   const newShop = await post(app, '/api/staff/shops', { name: 'Drugi Punkt' }, staff);
   assert.equal(newShop.status, 201);
+  assert.equal((await post(app, shopPath(newShop.body.id, 'stock'), {
+    itemId: selection.categoryId, quantity: 1,
+  }, staff)).status, 200);
   const { body: remote } = await app.request('/api/offer?shopId=' + newShop.body.id);
   const remoteSelection = app.selection(remote);
   const create = await post(app, '/api/staff/members', { username: 'operator', password: 'synthetic-password' }, staff);

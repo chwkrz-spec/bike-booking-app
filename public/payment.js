@@ -40,8 +40,7 @@ get('pay').addEventListener('click', async () => {
   get('error').hidden = true;
   get('pay').disabled = true;
   try {
-    await request(path + '/pay', {});
-    await request('/api/payment-notifications', { paymentId: id });
+    await request(path + '/complete', {});
     await load();
   } catch (error) {
     showError(error);

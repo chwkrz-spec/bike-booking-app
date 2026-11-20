@@ -78,6 +78,9 @@ test('Zmiana polityki w każdym punkcie dotyczy przyszłych akceptacji i zachowu
   const confirmed = await payRental(app, existing, { ...renter, termsVersion: existing.held.termsVersion });
   const otherShop = await post(app, '/api/staff/shops', { name: 'Drugi punkt' }, owner);
   assert.equal(otherShop.status, 201);
+  assert.equal((await post(app, '/api/staff/shops/' + otherShop.body.id + '/stock', {
+    itemId: existing.held.categoryId, quantity: 1,
+  }, owner)).status, 200);
   const awaitingAcceptance = await holdRental(app, { shopId: otherShop.body.id, slotId: pickup });
   const nextPolicy = { freeCancellationMinutes: 720, lateRefundPercent: 25, noShowGraceMinutes: 45 };
   assert.equal((await post(app, policyPath, nextPolicy, owner)).status, 200);
@@ -93,9 +96,11 @@ test('Zmiana polityki w każdym punkcie dotyczy przyszłych akceptacji i zachowu
     ...renter, termsVersion: awaitingAcceptance.held.termsVersion,
   });
   assert.equal(outdated.status, 409);
+  assert.equal((await post(app, awaitingAcceptance.path + '/payment', renter)).status, 409);
   const { body: updated } = await app.request(awaitingAcceptance.path);
   assert.notEqual(updated.terms, awaitingAcceptance.held.terms);
   assert.match(updated.terms, /25%/);
+  assert.equal((await post(app, awaitingAcceptance.path + '/payment', renter)).status, 409);
   const newBooking = await payRental(app, awaitingAcceptance, { ...renter, termsVersion: updated.termsVersion });
   assert.equal((await app.request(newBooking.manage)).body.freeCancellationCutoff, '2027-01-16T00:00:00.000Z');
 

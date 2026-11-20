@@ -1,6 +1,8 @@
 # Pilotaż rezerwacji rowerów
 
-Wersja pokazowa udostępnia widżet dla syntetycznych punktów, jedną kategorię roweru oraz odbiór i zwrot co pół godziny w polskim czasie lokalnym. Przedpłatę i potwierdzenie e-mail obsługuje lokalny symulator. Po zweryfikowaniu przedpłaty widżet pokazuje numer rezerwacji i adres odbiorcy zapisanej wiadomości.
+Pilotaż obsługuje wielu Partnerów i wiele punktów. Klient wybiera kategorie rowerów, akcesoria oraz terminy odbioru i zwrotu w odstępach 30 minut, w godzinach otwarcia punktu i w polskim czasie lokalnym. Widżet i link płatniczy od obsługi korzystają z tego samego cennika i zapasu punktu. Dodatni zapas początkowy ma punkt pokazowy. W nowym punkcie właściciel lub przypisany pracownik ustawia ilości przed przyjęciem rezerwacji.
+
+Lokalny symulator obsługuje przedpłaty i zwroty. Aplikacja zapisuje treść i adresatów wiadomości, a wysyłka e-mail wymaga podłączenia dostawcy. Obsługa może zatwierdzić zmianę terminu lub składu przy tej samej cenie oraz rozliczyć kwalifikujące się opłaty za sprzęt zdjęty przy odbiorze. Zmiana ceny przy modyfikacji opłaconej rezerwacji wymaga uzgodnienia sposobu rozliczenia.
 
 ## Uruchomienie
 
