@@ -82,3 +82,27 @@ test('Odświeżenie po przerwanym połączeniu odzyskuje ten sam termin rozpocz�
   assert.equal(firstDeadline, '2027-01-15T13:18:00.000Z');
   assert.equal(await deadline.getAttribute('datetime'), firstDeadline);
 });
+
+test('Okno płatności pokazuje informację o pełnym zwrocie po spóźnionej weryfikacji', async (t) => {
+  const app = await startTestApp(t);
+  const { body: offer } = await app.request('/api/offer');
+  const selection = app.selection(offer);
+  const { body: hold } = await app.request('/api/checkouts', { method: 'POST', body: selection });
+  const { body: payment } = await app.request('/api/checkouts/' + hold.id + '/payment', {
+    method: 'POST',
+    body: { email: 'pilot@example.test', phone: '+48 500 123 456', riderHeight: 176, acceptedTerms: true },
+  });
+  const paymentId = payment.paymentUrl.split('/').at(-1);
+  await app.request('/api/simulator/payments/' + paymentId + '/pay', { method: 'POST', body: {} });
+  app.advance(15);
+  const competingHold = await app.request('/api/checkouts', { method: 'POST', body: selection });
+  assert.equal(competingHold.status, 201);
+  await app.request('/api/payment-notifications', { method: 'POST', body: { paymentId } });
+
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ locale: 'pl-PL' });
+  await page.goto(app.origin + payment.paymentUrl);
+  await page.getByRole('status').filter({ hasText: 'Zleciliśmy pełny zwrot płatności.' }).waitFor({ timeout: 3000 });
+  assert.equal(await page.getByRole('button', { name: 'Zasymuluj płatność' }).isVisible(), false);
+});

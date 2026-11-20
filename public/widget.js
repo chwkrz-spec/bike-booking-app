@@ -72,11 +72,14 @@ async function showCheckout(checkout) {
   clearInterval(pendingRefresh);
   get('selected-slot').textContent = offer.category.name + ' · ' + formatSlot(checkout);
   get('checkout-total').textContent = formatAmount(checkout.total, checkout.currency);
-  if (checkout.status === 'expired') {
+  if (checkout.status === 'expired' || checkout.status === 'refund_started') {
+    const message = checkout.status === 'refund_started'
+      ? (await request('/api/checkouts/' + checkout.id + '/payment-failure')).content
+      : 'Blokada wygasła. Wybierz termin ponownie.';
     clearCheckout();
     await selection();
     showStep('selection');
-    showError(new Error('Blokada wygasła. Wybierz termin ponownie.'));
+    showError(new Error(message));
   } else if (checkout.status === 'confirmed') {
     const message = await request('/api/checkouts/' + checkout.id + '/confirmation');
     get('booking-number').textContent = 'Numer rezerwacji ' + message.bookingId;
