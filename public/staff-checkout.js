@@ -1,4 +1,5 @@
-import { formatAmount, formatSlot, get, request, showError, startCountdown } from './common.js';
+import { formatAmount, formatSlot, get, request, startCountdown } from './common.js';
+import { setRenterLanguage, showRenterError as showError, t } from './renter-language.js';
 
 const id = window.location.pathname.split('/').at(-1);
 const form = get('staff-renter-details');
@@ -15,7 +16,7 @@ function showHeights(items) {
     const label = document.createElement('label');
     const input = document.createElement('input');
     label.htmlFor = input.id = 'height-' + index;
-    label.textContent = 'Wzrost ' + (index + 1) + '. uczestnika (cm) — ' + name;
+    label.textContent = t('Wzrost ' + (index + 1) + '. uczestnika (cm)', 'Height of rider ' + (index + 1) + ' (cm)') + ' — ' + name;
     input.type = 'number';
     input.min = 50;
     input.max = 250;
@@ -27,16 +28,19 @@ function showHeights(items) {
 
 async function load() {
   const checkout = await request('/api/staff-checkout/' + id);
-  const { shop, status, items, total, currency } = checkout;
+  const { shop, status, items, total, currency, language } = checkout;
+  setRenterLanguage(language);
   const statuses = {
-    payment: 'Płatność została rozpoczęta.',
-    expired: 'Termin płatności minął. Skontaktuj się z punktem, aby przygotować nową rezerwację.',
-    confirmed: 'Rezerwacja potwierdzona.',
-    refund_started: 'Nie możemy zrealizować Twojej rezerwacji. Zleciliśmy pełny zwrot płatności.',
-    cancelled: 'Rezerwacja anulowana.',
-    no_show: 'Sprzęt nieodebrany.',
+    payment: t('Płatność została rozpoczęta.', 'Payment has started.'),
+    expired: t('Termin płatności minął. Skontaktuj się z punktem, aby przygotować nową rezerwację.', 'The payment deadline has passed. Contact the shop to arrange a new booking.'),
+    confirmed: t('Rezerwacja potwierdzona.', 'Booking confirmed.'),
+    refund_started: t('Nie możemy zrealizować Twojej rezerwacji. Zleciliśmy pełny zwrot płatności.', 'We cannot fulfil your booking. We have initiated a full refund.'),
+    cancelled: t('Rezerwacja anulowana.', 'Booking cancelled.'),
+    no_show: t('Sprzęt nieodebrany.', 'Equipment not collected.'),
   };
   get('shop-name').textContent = shop.name;
+  get('shop-description').textContent = shop.description;
+  get('shop-description').hidden = !shop.description;
   get('seller-name').textContent = shop.seller.legalName;
   get('seller-address').textContent = shop.seller.address;
   get('seller-nip').textContent = 'NIP ' + shop.seller.nip;
@@ -49,7 +53,7 @@ async function load() {
   }));
   get('total').textContent = formatAmount(total, currency);
   get('checkout-summary').hidden = false;
-  get('checkout-status').textContent = statuses[status] ?? '';
+  get('checkout-status').textContent = checkout.reason ?? statuses[status] ?? '';
   form.hidden = status !== 'held';
   paymentLink.hidden = status !== 'payment';
   stopCountdown();

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { OperationError } from './operation-error.js';
+import { validateLanguage } from './renter-language.js';
 
 const minute = 60_000;
 const defaults = { freeCancellationMinutes: 1440, lateRefundPercent: 50, noShowGraceMinutes: 30 };
@@ -9,9 +10,24 @@ const checkoutTerms = {
   widget: 'Nieopłacony sprzęt wraca do puli po zakończeniu blokady wyświetlonej w formularzu lub okna rozpoczętej płatności. Prywatny link do dokończenia rezerwacji działa przez 24 godziny od wysłania i nie przedłuża blokady.',
 };
 
-function termsText(shopTerms, policy, channel) {
+const englishCheckoutTerms = {
+  staff: 'Payment confirms the booking. Unpaid equipment is released 15 minutes after the link was sent. Opening the link or starting payment does not change the deadline.',
+  widget: 'Unpaid equipment is released when the checkout hold or payment window ends. Your private link is valid for 24 hours after it is sent and does not extend the hold.',
+};
+
+function termsText(shop, policy, channel, language) {
+  if (language === 'en') {
+    return [
+      shop.termsEn,
+      englishCheckoutTerms[channel],
+      'Cancel the entire booking using the private link in your confirmation or by contacting the seller.',
+      'If more than ' + policy.freeCancellationMinutes + ' minutes remain until pickup, your full prepayment will be refunded. At or after that cutoff, the refund is ' + policy.lateRefundPercent + '%.',
+      'If you have not collected your equipment within ' + policy.noShowGraceMinutes + ' minutes of your pickup time, your prepayment is non-refundable.',
+      'If the seller cancels the booking, you will receive a full monetary refund.',
+    ].filter(Boolean).join('\n\n');
+  }
   return [
-    shopTerms,
+    shop.terms,
     checkoutTerms[channel],
     'Całą rezerwację możesz anulować przez prywatny link w potwierdzeniu lub kontaktując się ze sprzedawcą.',
     'Jeśli do odbioru pozostało więcej niż ' + policy.freeCancellationMinutes + ' min, otrzymasz 100% przedpłaty. Przy krótszym czasie lub dokładnie na granicy zwrot wynosi ' + policy.lateRefundPercent + '%.',
@@ -47,10 +63,10 @@ export function openCancellationPolicies(db, management) {
     return saved ? JSON.parse(saved.settings) : defaults;
   }
 
-  function quote(shopId, channel = 'widget') {
+  function quote(shopId, channel = 'widget', language = 'pl') {
     const { shop, partnerId } = management.publicShop(shopId);
     const policy = readPolicy(partnerId);
-    const terms = termsText(shop.terms, policy, channel);
+    const terms = termsText(shop, policy, channel, language);
     const termsVersion = createHash('sha256').update(terms).digest('hex');
     return { terms, termsVersion, policy };
   }
@@ -73,8 +89,9 @@ export function openCancellationPolicies(db, management) {
       savePolicy.run(actor.partnerId, JSON.stringify(settings));
       return settings;
     },
-    accept(checkout, termsVersion, channel) {
-      const { terms, termsVersion: expected, policy } = quote(checkout.shop_id, channel);
+    accept(checkout, termsVersion, channel, language) {
+      validateLanguage(management.publicShop(checkout.shop_id).shop, language);
+      const { terms, termsVersion: expected, policy } = quote(checkout.shop_id, channel, language);
       if (termsVersion !== undefined && termsVersion !== expected) {
         throw new OperationError(409, 'Warunki najmu się zmieniły. Zapoznaj się z nimi ponownie.');
       }

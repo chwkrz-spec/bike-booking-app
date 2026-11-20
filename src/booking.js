@@ -16,8 +16,10 @@ import { openShopManagement } from './shop-management.js';
 import { openCheckoutResumes } from './checkout-resume.js';
 import { openWidgets } from './widgets.js';
 import { openStaffAssisted, renterEmail, staffNoticeMinutes } from './staff-assisted.js';
+import { renterItem, renterShop, shopLanguages, validateLanguage } from './renter-language.js';
 
 const holdDuration = 15 * 60 * 1000;
+const withdrawnTerms = 'English rental terms are no longer available.';
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 
 function renterDetails(input, bikeCount, phoneRequired) {
@@ -86,6 +88,10 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
       terms_text TEXT,
       terms_accepted_at INTEGER
     ) STRICT;
+    CREATE TABLE IF NOT EXISTS checkout_languages (
+      checkout_id TEXT PRIMARY KEY REFERENCES checkouts(id),
+      language TEXT NOT NULL
+    ) STRICT;
     CREATE TABLE IF NOT EXISTS checkout_carts (
       checkout_id TEXT PRIMARY KEY REFERENCES checkouts(id),
       items TEXT NOT NULL,
@@ -145,17 +151,26 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
   const amendments = openBookingAmendments(db, refunds);
   const simulator = createPaymentSimulator(db, refunds);
   const policies = openCancellationPolicies(db, management);
-  const resumes = openCheckoutResumes(db);
-  const assisted = openStaffAssisted(db);
+  const assisted = openStaffAssisted(db, management);
+  const checkoutLanguage = db.prepare('SELECT language FROM checkout_languages WHERE checkout_id = ?');
+  const storeLanguage = db.prepare('INSERT INTO checkout_languages VALUES (?, ?)');
+  const languageOf = ({ id }) => checkoutLanguage.get(id)?.language ?? assisted.get(id)?.language ?? 'pl';
+  const resumes = openCheckoutResumes(db, languageOf);
 
   function describeCheckout(row, time, payment) {
     const link = assisted.get(row.id);
+    const language = languageOf(row);
     const summary = {
       ...checkoutSummary(row, time, payment),
-      ...(link && { channel: 'staff', language: link.language }),
+      items: savedItems(row).map((item) => renterItem(item, language)),
+      language,
+      ...(link && { channel: 'staff' }),
     };
     if (summary.status !== 'held') return summary;
-    const { terms, termsVersion } = policies.quote(row.shop_id, link ? 'staff' : 'widget');
+    if (language === 'en' && !management.publicShop(row.shop_id).shop.termsEn) {
+      return { ...summary, status: 'unavailable', reason: withdrawnTerms };
+    }
+    const { terms, termsVersion } = policies.quote(row.shop_id, link ? 'staff' : 'widget', language);
     return { ...summary, terms, termsVersion };
   }
   const selectBooking = db.prepare('SELECT * FROM bookings WHERE payment_id = ?');
@@ -244,7 +259,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
   const insertCart = db.prepare('INSERT INTO checkout_carts (checkout_id, items) VALUES (?, ?)');
   const recordHeights = db.prepare('UPDATE checkout_carts SET rider_heights = ? WHERE checkout_id = ?');
   const cancellations = openBookingCancellations(db, {
-    policies, refunds, simulator, management, now,
+    policies, refunds, simulator, management, now, languageOf,
     itemsForBooking: (row) => savedItems(amendedBooking({ ...selectCheckout.get(row.id), ...row })),
     allocationForBooking: (row) => {
       const substitution = selectSubstitution.get(row.booking_id);
@@ -322,32 +337,37 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     }
   }
 
-  function resumeState(session, time) {
+  function resumeState(session, time, { rawItems = false } = {}) {
     const row = checkout(session.current_checkout_id);
     const payment = checkoutPayment.get(row.id);
     const summary = describeCheckout(row, time, payment);
     const { shop, settings } = management.publicShop(row.shop_id);
+    const { language } = summary;
     const draft = JSON.parse(session.draft);
-    const view = { checkout: summary, draft, shop };
+    const view = { checkout: summary, draft, shop: renterShop(shop, language) };
     if (['payment', 'expired'].includes(summary.status) && payment && simulator.verify(payment.id)) {
       return { ...view, checkout: { ...summary, status: 'processing' } };
     }
     if (summary.status !== 'expired') return view;
+    if (!shopLanguages(shop).includes(language)) {
+      return { ...view, checkout: { ...summary, status: 'unavailable', reason: withdrawnTerms } };
+    }
     const calendar = bookingCalendar(settings, time);
     const slot = calendar.selection(summary.pickupAt, summary.returnAt);
     const inventory = management.inventory(row.shop_id);
     const selected = savedItems(row);
     const quantities = slot && availability(row.shop_id, inventory, time, settings.turnaroundBufferMinutes)(slot);
     if (!slot || !available(selected, quantities)) {
-      return { ...view, checkout: { ...summary, status: 'unavailable', reason: 'Wybrany termin lub sprzęt nie jest już dostępny.' } };
+      const reason = language === 'en' ? 'The selected time or equipment is no longer available.'
+        : 'Wybrany termin lub sprzęt nie jest już dostępny.';
+      return { ...view, checkout: { ...summary, status: 'unavailable', reason } };
     }
-    const items = selected.map((item) => ({
-      ...item, name: inventory.find(({ id }) => id === item.itemId).name,
-    }));
+    const items = selectionItems(selected, undefined, inventory);
     const cart = pricingForPickup(calendar, slot.pickupAt, inventory).cart(slot.returnAt, items);
     const total = cart.reduce((sum, item) => sum + item.quantity * item.unitTotal, 0);
     const quoteVersion = createHash('sha256').update(JSON.stringify({ id: row.id, cart })).digest('hex');
-    return { ...view, checkout: { ...summary, items: cart, total, quoteVersion, status: 'reconfirm' } };
+    return { ...view, checkout: { ...summary, items: rawItems ? cart : cart.map((item) => renterItem(item, language)),
+      total, quoteVersion, status: 'reconfirm' } };
   }
 
   function pickupAssignment(row) {
@@ -437,7 +457,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
   }
 
   function reserveSelection({ shopId, categoryId, slotId, returnAt, items }, time, {
-    requestId, channelNoticeMinutes,
+    requestId, channelNoticeMinutes, language = 'pl',
   } = {}) {
     const inventory = management.inventory(shopId);
     const selected = selectionItems(items, categoryId, inventory);
@@ -455,6 +475,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     const firstBike = cart.find(({ kind }) => kind === 'bike').itemId;
     insertCheckout.run(id, requestId ?? null, shopId, firstBike, slot.pickupAt, slot.returnAt, total, time + holdDuration);
     insertCart.run(id, JSON.stringify(cart));
+    if (language !== 'pl') storeLanguage.run(id, language);
     return checkout(id);
   }
 
@@ -473,9 +494,10 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
     }
   }
 
-  function offer(shopId, pickupAt, channel = 'widget') {
+  function offer(shopId, pickupAt, channel = 'widget', language = 'pl') {
     const time = now();
     const { shop: selectedShop, settings } = management.publicShop(shopId);
+    validateLanguage(selectedShop, language);
     const calendar = bookingCalendar(settings, time, channel === 'staff' ? staffNoticeMinutes : undefined);
     const inventory = management.inventory(selectedShop.id);
     const quantitiesFor = availability(selectedShop.id, inventory, time, settings.turnaroundBufferMinutes);
@@ -500,13 +522,15 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         slots.push(slot);
       }
     }
-    const { terms, termsVersion } = policies.quote(selectedShop.id, channel);
+    const { terms, termsVersion } = policies.quote(selectedShop.id, channel, language);
     let pricing;
     let quotedPickup;
+    const equipment = inventory.map((item) => renterItem(item, language));
     return {
-      shop: { ...selectedShop, terms, termsVersion },
-      category: { id: category.id, name: inventory.find(({ id }) => id === category.id).name },
-      equipment: inventory,
+      shop: { ...renterShop(selectedShop, language), terms, termsVersion },
+      category: { id: category.id, name: equipment.find(({ id }) => id === category.id).name },
+      equipment,
+      languages: shopLanguages(selectedShop),
       currency: 'PLN',
       slots: slots.map((slot) => {
         if (slot.pickupAt !== quotedPickup) {
@@ -638,7 +662,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
           }
           return assisted.delivery(describeCheckout(retry, time, checkoutPayment.get(retry.id)));
         }
-        const row = reserveSelection(selection, time, { requestId: key, channelNoticeMinutes: staffNoticeMinutes });
+        const row = reserveSelection(selection, time, { requestId: key, channelNoticeMinutes: staffNoticeMinutes, language });
         const { shop } = management.publicShop(shopId);
         assisted.enqueue(actor, checkoutSummary(row, time), shop, email, language);
         return assisted.delivery(describeCheckout(row, time));
@@ -648,11 +672,11 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
       if (!assisted.get(id)) throw new OperationError(404, 'Nie znaleziono linku do płatności.');
       const row = checkout(id);
       const { shop } = management.publicShop(row.shop_id);
-      return { ...describeCheckout(row, now(), checkoutPayment.get(id)), shop };
+      return { ...describeCheckout(row, now(), checkoutPayment.get(id)), shop: renterShop(shop, languageOf(row)) };
     },
     offer,
     hold(selection) {
-      const { shopId, requestId } = selection;
+      const { shopId, requestId, language = 'pl' } = selection;
       validateRequestId(requestId);
       if (typeof shopId !== 'string') throw new OperationError(400, 'Wybierz punkt i termin z aktualnej oferty.');
       return transaction(() => {
@@ -660,9 +684,11 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         const retry = requestId && selectRetry.get(requestId);
         if (retry) {
           verifyRetriedSelection(retry, selection);
+          if (languageOf(retry) !== language) throw new OperationError(409, 'Ta próba dotyczy innego języka.');
           return describeCheckout(retry, time, checkoutPayment.get(retry.id));
         }
-        return describeCheckout(reserveSelection(selection, time, { requestId }), time);
+        validateLanguage(management.publicShop(shopId).shop, language);
+        return describeCheckout(reserveSelection(selection, time, { requestId, language }), time);
       });
     },
     checkout(id) {
@@ -678,7 +704,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         if (assisted.get(id) || current.status !== 'held' || current.deadline <= time) {
           throw new OperationError(409, 'Link można wysłać w trakcie wypełniania formularza.');
         }
-        return resumes.issue(id, input, bikeCount(current), time);
+        return resumes.issue(id, input, bikeCount(current), time, languageOf(current));
       });
     },
     resumeCheckout(token) {
@@ -689,7 +715,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
       return transaction(() => {
         const time = now();
         const session = resumes.read(token, time);
-        const view = resumeState(session, time);
+        const view = resumeState(session, time, { rawItems: true });
         const current = view.checkout;
         if (current.status === 'held') return view;
         if (current.status !== 'reconfirm' || quoteVersion !== current.quoteVersion) {
@@ -699,6 +725,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         insertCheckout.run(id, null, current.shopId, current.categoryId, Date.parse(current.pickupAt),
           Date.parse(current.returnAt), current.total, time + holdDuration);
         insertCart.run(id, JSON.stringify(current.items));
+        if (current.language !== 'pl') storeLanguage.run(id, current.language);
         resumes.replace(session.id, id);
         return resumeState(resumes.read(token, time), time);
       });
@@ -724,7 +751,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         const details = link ? { ...input, email: link.recipient } : input;
         const count = bikeCount(current);
         const { email, phone, riderHeights } = renterDetails(details, count, !link);
-        const terms = policies.accept(current, input.termsVersion, link ? 'staff' : 'widget');
+        const terms = policies.accept(current, input.termsVersion, link ? 'staff' : 'widget', languageOf(current));
         const paymentId = randomUUID();
         insertPayment.run(paymentId, id);
         startPayment.run(link ? current.deadline : time + holdDuration, email, phone, riderHeights[0], terms, time, id);
@@ -741,6 +768,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
       return {
         status: describeCheckout(current, time).status,
         total: current.total,
+        language: languageOf(current),
         currency: 'PLN',
         expiresAt: new Date(current.deadline).toISOString(),
         serverTime: new Date(time).toISOString(),
@@ -779,8 +807,10 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         if (startedRefund || (expired && originalSlot.pickupAt <= time) || !canConfirm()) {
           const refund = startedRefund ?? simulator.startFullRefund(id, time);
           refundCheckout.run(current.id);
-          insertFailureMessage.run(id, current.email, 'Zwrot płatności za rezerwację',
-            'Nie możemy zrealizować Twojej rezerwacji. Zleciliśmy pełny zwrot płatności.');
+          const english = languageOf(current) === 'en';
+          insertFailureMessage.run(id, current.email, english ? 'Booking payment refund' : 'Zwrot płatności za rezerwację',
+            english ? 'We cannot fulfil your booking. We have initiated a full refund.'
+              : 'Nie możemy zrealizować Twojej rezerwacji. Zleciliśmy pełny zwrot płatności.');
           return { status: 'refund_started', refundId: refund.id };
         }
 
@@ -789,8 +819,10 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
         verifyPayment.run(id);
         confirmCheckout.run(current.id);
         const bookingUrl = cancellations.privateUrl(bookingId);
-        insertMessage.run(bookingId, current.email, 'Potwierdzenie rezerwacji',
-          'Potwierdziliśmy rezerwację ' + bookingId + '.\nSzczegóły i anulowanie rezerwacji: ' + bookingUrl);
+        const english = languageOf(current) === 'en';
+        const content = english ? 'We confirmed booking ' + bookingId + '.\nBooking details and cancellation: '
+          : 'Potwierdziliśmy rezerwację ' + bookingId + '.\nSzczegóły i anulowanie rezerwacji: ';
+        insertMessage.run(bookingId, current.email, english ? 'Booking confirmation' : 'Potwierdzenie rezerwacji', content + bookingUrl);
         return { status: 'confirmed', bookingId };
       });
     },

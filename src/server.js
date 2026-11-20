@@ -9,6 +9,7 @@ import { OperationError } from './operation-error.js';
 const assets = new Map([
   ['/assets/styles.css', ['styles.css', 'text/css']],
   ['/assets/common.js', ['common.js', 'text/javascript']],
+  ['/assets/renter-language.js', ['renter-language.js', 'text/javascript']],
   ['/assets/widget.js', ['widget.js', 'text/javascript']],
   ['/assets/widget-context.js', ['widget-context.js', 'text/javascript']],
   ['/assets/widget-popup.js', ['widget-popup.js', 'text/javascript']],
@@ -163,9 +164,13 @@ export function createApp({
         if (shopCopy && method === 'POST') {
           return json(response, 200, management.copyConfiguration(actor, shopCopy[1], await staffBody(request)));
         }
-        const shopRoute = path.match(/^\/api\/staff\/shops\/([\w-]+)\/(settings|stock|catalog|bookings)$/);
+        const shopRoute = path.match(/^\/api\/staff\/shops\/([\w-]+)\/(settings|stock|catalog|bookings|renter-copy)$/);
         if (shopRoute) {
           const [, shopId, resource] = shopRoute;
+          if (resource === 'renter-copy') {
+            if (method === 'GET') return json(response, 200, management.renterCopy(actor, shopId));
+            if (method === 'POST') return json(response, 200, management.renterCopy(actor, shopId, await staffBody(request)));
+          }
           if (resource === 'settings') {
             if (method === 'GET') return json(response, 200, management.settings(actor, shopId));
             if (method === 'POST') return json(response, 200, management.settings(actor, shopId, await staffBody(request)));
@@ -240,7 +245,7 @@ export function createApp({
       const widgetOffer = path.match(/^\/api\/widgets\/([\w-]+)\/offer$/);
       if (method === 'GET' && widgetOffer) {
         const shopId = widgets.selectedShop(widgetOffer[1], url.searchParams.get('shopId'));
-        return json(response, 200, booking.offer(shopId, url.searchParams.get('pickupAt') ?? undefined));
+        return json(response, 200, booking.offer(shopId, url.searchParams.get('pickupAt') ?? undefined, 'widget', url.searchParams.get('language') ?? undefined));
       }
       const widgetCheckout = path.match(/^\/api\/widgets\/([\w-]+)\/checkouts$/);
       if (method === 'POST' && widgetCheckout) {
@@ -251,6 +256,7 @@ export function createApp({
       if (method === 'GET' && path === '/api/offer') {
         return json(response, 200, booking.offer(
           url.searchParams.get('shopId') ?? undefined, url.searchParams.get('pickupAt') ?? undefined,
+          'widget', url.searchParams.get('language') ?? undefined,
         ));
       }
       if (method === 'POST' && path === '/api/checkouts') return json(response, 201, booking.hold(await body(request)));
@@ -274,7 +280,9 @@ export function createApp({
       if (method === 'GET' && assets.has(path)) return await file(response, ...assets.get(path));
       json(response, 404, { error: 'Nie znaleziono strony.' });
     } catch (error) {
-      if (error instanceof OperationError) return json(response, error.status, { error: error.message });
+      if (error instanceof OperationError) {
+        return json(response, error.status, { error: error.message, ...(error.language === 'en' && { language: 'en' }) });
+      }
       console.error(error);
       json(response, 500, { error: 'Wystąpił błąd. Spróbuj ponownie.' });
     }

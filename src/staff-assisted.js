@@ -1,4 +1,5 @@
 import { OperationError } from './operation-error.js';
+import { renterItem, renterShop, shopLanguages, validateLanguage } from './renter-language.js';
 
 const dateTime = new Intl.DateTimeFormat('pl-PL', {
   timeZone: 'Europe/Warsaw', dateStyle: 'short', timeStyle: 'short',
@@ -15,7 +16,7 @@ export function renterEmail(value) {
   return email;
 }
 
-export function openStaffAssisted(db) {
+export function openStaffAssisted(db, management) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS staff_payment_links (
       checkout_id TEXT PRIMARY KEY REFERENCES checkouts(id),
@@ -29,7 +30,7 @@ export function openStaffAssisted(db) {
   const read = db.prepare('SELECT * FROM staff_payment_links WHERE checkout_id = ?');
   const insert = db.prepare('INSERT INTO staff_payment_links VALUES (?, ?, ?, ?, ?, ?)');
 
-  const languages = () => ['pl'];
+  const languages = (shopId) => shopLanguages(management.publicShop(shopId).shop);
   const checkoutUrl = (id) => '/staff-checkout/' + id;
 
   return {
@@ -37,20 +38,27 @@ export function openStaffAssisted(db) {
     checkoutUrl,
     languages,
     validateLanguage(shopId, language) {
-      if (!languages(shopId).includes(language)) throw new OperationError(400, 'Ten język nie jest dostępny dla tego punktu.');
+      validateLanguage(management.publicShop(shopId).shop, language);
     },
     enqueue(actor, checkout, shop, email, language) {
-      const items = checkout.items.map(({ name, quantity }) => name + ' × ' + quantity);
+      const english = language === 'en';
+      const shopName = renterShop(shop, language).name;
+      const items = checkout.items.map((item) => {
+        const { name, quantity } = renterItem(item, language);
+        return name + ' × ' + quantity;
+      });
       const content = [
-        shop.name,
-        'Odbiór: ' + dateTime.format(new Date(checkout.pickupAt)),
-        'Zwrot: ' + dateTime.format(new Date(checkout.returnAt)),
+        shopName,
+        (english ? 'Pickup: ' : 'Odbiór: ') + dateTime.format(new Date(checkout.pickupAt)),
+        (english ? 'Return: ' : 'Zwrot: ') + dateTime.format(new Date(checkout.returnAt)),
         ...items,
-        'Razem: ' + amount.format(checkout.total / 100),
-        'Zapłać do: ' + dateTime.format(new Date(checkout.expiresAt)) + ' (czas polski)',
-        'Zapłać, aby potwierdzić: ' + checkoutUrl(checkout.id),
+        (english ? 'Total: ' : 'Razem: ') + amount.format(checkout.total / 100),
+        (english ? 'Pay by: ' : 'Zapłać do: ') + dateTime.format(new Date(checkout.expiresAt)) +
+          (english ? ' (Warsaw time)' : ' (czas polski)'),
+        (english ? 'Pay to confirm: ' : 'Zapłać, aby potwierdzić: ') + checkoutUrl(checkout.id),
       ].join('\n');
-      insert.run(checkout.id, actor.username, language, email, 'Opłać rezerwację rowerów', content);
+      const subject = english ? 'Pay to confirm your bike booking' : 'Opłać rezerwację rowerów';
+      insert.run(checkout.id, actor.username, language, email, subject, content);
     },
     delivery(checkout) {
       const { recipient: to, subject, content } = read.get(checkout.id);

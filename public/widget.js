@@ -1,5 +1,6 @@
-import { formatAmount, formatInstant, formatSlot, get, request, showError, startCountdown } from './common.js';
+import { formatAmount, formatInstant, formatSlot, get, request, startCountdown } from './common.js';
 
+import { setRenterLanguage, showRenterError as showError, t } from './renter-language.js';
 import { openWidgetContext } from './widget-context.js';
 
 const widget = openWidgetContext();
@@ -9,6 +10,16 @@ const scope = resumeApi ?? widget.scope;
 const checkoutKey = 'bike-checkout' + scope;
 const attemptKey = 'bike-selection-attempt' + scope;
 const draftKey = 'bike-checkout-draft' + scope;
+const languageKey = 'bike-checkout-language' + scope;
+const languagePicker = get('renter-language');
+let language = 'pl';
+let availableLanguages = ['pl'];
+
+function useLanguage(value) {
+  language = value;
+  languagePicker.value = value;
+  setRenterLanguage(value);
+}
 const steps = ['selection', 'details', 'resume-reconfirm', 'payment-pending', 'confirmation'];
 
 let offer;
@@ -30,6 +41,7 @@ function showStep(step) {
   for (const id of steps) get(id).hidden = id !== step;
   get('loading').hidden = true;
   widget.showPicker(step === 'selection');
+  get('language-picker').hidden = step !== 'selection' || availableLanguages.length < 2;
   get('checkout-summary').hidden = !['details', 'resume-reconfirm', 'payment-pending', 'confirmation'].includes(step);
 }
 
@@ -56,7 +68,7 @@ function showPrice() {
     const input = get('quantity-' + id);
     input.max = available;
     input.disabled = !slot;
-    get('availability-' + id).textContent = slot ? 'Dostępne: ' + available : '';
+    get('availability-' + id).textContent = slot ? t('Dostępne: ', 'Available: ') + available : '';
   }
 
   const items = selectedItems();
@@ -89,14 +101,15 @@ function buildQuantities() {
   initialQuantities = true;
 }
 
-function offerPath(pickupAt) {
+function offerPath(pickupAt, requestedLanguage = language) {
   const params = new URLSearchParams();
   if (widget.shopId) params.set('shopId', widget.shopId);
   if (pickupAt) params.set('pickupAt', pickupAt);
+  if (requestedLanguage === 'en') params.set('language', requestedLanguage);
   return widget.apiPrefix + '/offer?' + params;
 }
 
-async function loadReturns() {
+async function loadReturns(previousReturn) {
   const attempt = ++returnRequest;
   const pickupAt = get('slot').value;
   confirmButton.disabled = true;
@@ -111,7 +124,8 @@ async function loadReturns() {
       returns = result.slots;
     }
     get('return').replaceChildren(...returns.map((slot) => new Option(formatInstant(slot.returnAt), slot.returnAt)));
-    const preferred = offer.slots.find(({ id }) => id === pickupAt)?.returnAt;
+    const preferred = typeof previousReturn === 'string' && returns.some(({ returnAt }) => returnAt === previousReturn)
+      ? previousReturn : offer.slots.find(({ id }) => id === pickupAt)?.returnAt;
     if (returns.some(({ returnAt }) => returnAt === preferred)) get('return').value = preferred;
     get('return').disabled = returns.length === 0;
     get('no-slots').hidden = returns.length > 0;
@@ -123,18 +137,34 @@ async function loadReturns() {
 
 function renderSeller(shop) {
   get('shop-name').textContent = shop.name;
+  get('shop-description').textContent = shop.description;
+  get('shop-description').hidden = !shop.description;
   get('legal-name').textContent = shop.seller.legalName;
   get('seller-address').textContent = shop.seller.address;
   get('seller-nip').textContent = 'NIP ' + shop.seller.nip;
   get('seller').hidden = false;
 }
 
-async function selection() {
-  offer = await request(offerPath());
+async function selection(preferredLanguage = widget.storage.getItem(languageKey), preserve = false) {
+  const pickup = preserve && get('slot').value;
+  const returned = preserve && get('return').value;
+  const quantities = preserve ? selectedItems() : [];
+  const polish = await request(offerPath(undefined, 'pl'));
+  availableLanguages = polish.languages;
+  useLanguage(availableLanguages.includes(preferredLanguage) ? preferredLanguage : 'pl');
+  offer = language === 'en' ? await request(offerPath()) : polish;
   renderSeller(offer.shop);
   buildQuantities();
+  if (preserve) {
+    initialQuantities = false;
+    for (const { itemId, quantity } of quantities) {
+      const input = get('quantity-' + itemId);
+      if (input && Number.isInteger(quantity)) input.value = quantity;
+    }
+  }
   get('slot').replaceChildren(...offer.slots.map((slot) => new Option(formatInstant(slot.pickupAt), slot.id)));
-  await loadReturns();
+  if (offer.slots.some(({ id }) => id === pickup)) get('slot').value = pickup;
+  await loadReturns(returned);
 }
 
 function details() {
@@ -155,7 +185,7 @@ function renderHeightFields(items) {
     const field = document.createElement('div');
     const label = document.createElement('label');
     const input = document.createElement('input');
-    label.textContent = bikes.length === 1 ? 'Wzrost uczestnika (cm)' : 'Wzrost uczestnika — ' + bike + ' (cm)';
+    label.textContent = bikes.length === 1 ? t('Wzrost uczestnika (cm)', 'Rider height (cm)') : t('Wzrost uczestnika — ', 'Rider height — ') + bike + ' (cm)';
     label.htmlFor = input.id = 'height-' + index;
     input.name = 'riderHeight';
     input.type = 'number';
@@ -194,6 +224,7 @@ function clearCheckout() {
 }
 
 async function showCheckout(checkout) {
+  useLanguage(checkout.language);
   stopCountdown();
   clearInterval(pendingRefresh);
   const summary = checkout.items.map(({ name, quantity }) => name + ' × ' + quantity).join(', ');
@@ -208,7 +239,7 @@ async function showCheckout(checkout) {
   } else if (checkout.status === 'expired' || checkout.status === 'refund_started') {
     const message = checkout.status === 'refund_started'
       ? (await request('/api/checkouts/' + checkout.id + '/payment-failure')).content
-      : 'Blokada wygasła. Wybierz termin ponownie.';
+      : t('Blokada wygasła. Wybierz termin ponownie.', 'Your checkout hold has expired. Choose a time again.');
     if (resumeApi) {
       showStep(null);
     } else {
@@ -219,10 +250,14 @@ async function showCheckout(checkout) {
     showError(new Error(message));
   } else if (['confirmed', 'cancelled', 'no_show'].includes(checkout.status)) {
     const message = await request('/api/checkouts/' + checkout.id + '/confirmation');
-    const labels = { confirmed: 'Rezerwacja potwierdzona', cancelled: 'Rezerwacja anulowana', no_show: 'Sprzęt nieodebrany' };
+    const labels = {
+      confirmed: t('Rezerwacja potwierdzona', 'Booking confirmed'),
+      cancelled: t('Rezerwacja anulowana', 'Booking cancelled'),
+      no_show: t('Sprzęt nieodebrany', 'Equipment not collected'),
+    };
     get('confirmation-heading').textContent = labels[checkout.status];
     get('manage-booking').href = message.bookingUrl;
-    get('booking-number').textContent = 'Numer rezerwacji ' + message.bookingId;
+    get('booking-number').textContent = t('Numer rezerwacji ', 'Booking reference ') + message.bookingId;
     get('confirmation-email').textContent = message.to;
     showStep('confirmation');
   } else if (['payment', 'processing'].includes(checkout.status)) {
@@ -304,7 +339,23 @@ get('widget-shop').addEventListener('change', async (event) => {
     showError(error);
   }
 });
-get('slot').addEventListener('change', loadReturns);
+languagePicker.addEventListener('change', async () => {
+  const requested = languagePicker.value;
+  languagePicker.disabled = get('widget-shop').disabled = true;
+  confirmButton.disabled = true;
+  get('error').hidden = true;
+  try {
+    await selection(requested, true);
+    widget.storage.setItem(languageKey, language);
+    showStep('selection');
+  } catch (error) {
+    showError(error);
+  } finally {
+    languagePicker.disabled = get('widget-shop').disabled = false;
+    showPrice();
+  }
+});
+get('slot').addEventListener('change', () => loadReturns());
 get('return').addEventListener('change', showPrice);
 get('equipment').addEventListener('input', showPrice);
 
@@ -319,9 +370,9 @@ get('selection').addEventListener('submit', async (event) => {
     const returnAt = get('return').value;
     const items = selectedItems().filter(({ quantity }) => quantity > 0).map(({ itemId, quantity }) => ({ itemId, quantity }));
     let attempt = savedAttempt();
-    if (attempt?.slotId !== slotId || attempt.shopId !== offer.shop.id || attempt.returnAt !== returnAt ||
+    if (attempt?.slotId !== slotId || (attempt.language ?? 'pl') !== language || attempt.shopId !== offer.shop.id || attempt.returnAt !== returnAt ||
         JSON.stringify(attempt.items) !== JSON.stringify(items)) {
-      attempt = { requestId: crypto.randomUUID(), slotId, returnAt, shopId: offer.shop.id, items };
+      attempt = { requestId: crypto.randomUUID(), slotId, returnAt, shopId: offer.shop.id, items, language };
       widget.storage.setItem(attemptKey, JSON.stringify(attempt));
     }
     await confirmSelection(attempt);
