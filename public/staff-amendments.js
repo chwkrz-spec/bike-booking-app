@@ -10,16 +10,6 @@ const localDateTime = new Intl.DateTimeFormat('sv-SE', {
 });
 const localValue = (instant) => localDateTime.format(new Date(instant)).replace(' ', 'T');
 
-function fromLocalValue(value, original) {
-  if (localValue(original) === value) return original;
-  const localAsUtc = Date.parse(value + 'Z');
-  const choices = [1, 2].map((offset) => localAsUtc - offset * 3_600_000)
-    .filter((instant) => Number.isFinite(instant) && localValue(instant) === value);
-  if (choices.length > 1) throw new Error('Wybierz inną godzinę. Ta godzina występuje dwukrotnie przy zmianie czasu.');
-  if (!choices.length) throw new Error('Wybierz prawidłową datę i godzinę w polskim czasie.');
-  return new Date(choices[0]).toISOString();
-}
-
 function field(parent, text, type, value, attributes = {}) {
   const label = document.createElement('label');
   label.textContent = text;
@@ -27,6 +17,33 @@ function field(parent, text, type, value, attributes = {}) {
   label.append(input);
   parent.append(label);
   return input;
+}
+
+function dateField(form, text, original) {
+  const input = field(form, text + ' (czas polski)', 'datetime-local', localValue(original), { step: 1800 });
+  const label = document.createElement('label');
+  label.textContent = text + ' podczas zmiany czasu';
+  const occurrence = document.createElement('select');
+  label.append(occurrence);
+  form.append(label);
+
+  function update() {
+    const localAsUtc = Date.parse(input.value + 'Z');
+    const instants = [2, 1].map((offset) => localAsUtc - offset * 3_600_000)
+      .filter((instant) => Number.isFinite(instant) && localValue(instant) === input.value)
+      .map((instant) => new Date(instant).toISOString());
+    occurrence.replaceChildren(...instants.map((instant) => new Option(formatInstant(instant), instant)));
+    if (instants.includes(original)) occurrence.value = original;
+    label.hidden = instants.length < 2;
+    occurrence.disabled = label.hidden;
+  }
+
+  input.addEventListener('input', update);
+  update();
+  return () => {
+    if (!occurrence.value) throw new Error('Wybierz prawidłową datę i godzinę w polskim czasie.');
+    return occurrence.value;
+  };
 }
 
 function submit(form, text) {
@@ -150,16 +167,16 @@ function prePickupEditor(booking, stock, path, money, saves, refreshShop) {
       return 'Zapisano zmianę rezerwacji.';
     },
   );
-  const pickup = field(view.form, 'Odbiór (czas polski)', 'datetime-local', localValue(booking.pickupAt), { step: 1800 });
-  const returned = field(view.form, 'Zwrot sprzętu (czas polski)', 'datetime-local', localValue(booking.returnAt), { step: 1800 });
+  const pickup = dateField(view.form, 'Odbiór', booking.pickupAt);
+  const returned = dateField(view.form, 'Zwrot sprzętu', booking.returnAt);
   const counts = new Map(booking.items.map(({ itemId, quantity }) => [itemId, quantity]));
   const selected = quantities(view.form, stock.map(({ id, name }) => ({ itemId: id, name })), {
     value: ({ itemId }) => counts.get(itemId) ?? 0,
   });
   data = () => ({
     items: selected(),
-    pickupAt: fromLocalValue(pickup.value, booking.pickupAt),
-    returnAt: fromLocalValue(returned.value, booking.returnAt),
+    pickupAt: pickup(),
+    returnAt: returned(),
   });
   view.finishFields();
   return view.details;
