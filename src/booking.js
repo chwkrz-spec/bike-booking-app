@@ -6,6 +6,7 @@ import { category, shop } from './catalog.js';
 import { OperationError } from './operation-error.js';
 import { createPaymentSimulator } from './payment-simulator.js';
 import { openShopManagement } from './shop-management.js';
+import { openWidgets } from './widgets.js';
 
 const holdDuration = 15 * 60 * 1000;
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -209,6 +210,7 @@ export function openBooking({ databasePath, now, staffPassword, demoOwners }) {
 
   return {
     management,
+    widgets: openWidgets(db),
     offer(shopId, pickupAt) {
       const time = now();
       const { shop: selectedShop, settings } = management.publicShop(shopId);

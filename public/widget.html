@@ -10,10 +10,15 @@
 <body>
   <main class="booking-layout">
     <section class="booking-card" aria-labelledby="page-title">
+      <img id="widget-logo" alt="Logo Partnera" referrerpolicy="no-referrer" hidden>
       <p class="shop-name" id="shop-name"></p>
       <h1 id="page-title">Zarezerwuj rower</h1>
       <p id="error" class="error" role="alert" hidden></p>
       <p id="loading" role="status">Sprawdzamy dostępne terminy…</p>
+      <div id="shop-picker" hidden>
+        <label for="widget-shop">Wybierz punkt</label>
+        <select id="widget-shop"></select>
+      </div>
       <form id="selection" hidden>
         <label for="slot">Termin odbioru</label>
         <select id="slot" name="slot" required></select>
