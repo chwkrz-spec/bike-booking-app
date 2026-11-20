@@ -155,10 +155,18 @@ export function createApp({
         }
         const assisted = path.match(/^\/api\/staff\/shops\/([\w-]+)\/(assisted-offer|payment-links)$/);
         if (assisted?.[2] === 'assisted-offer' && method === 'GET') {
-          return json(response, 200, booking.staffOffer(actor, assisted[1], url.searchParams.get('pickupAt') ?? undefined));
+          return json(response, 200, booking.staffOffer(actor, assisted[1],
+            url.searchParams.get('pickupAt') ?? undefined, url.searchParams.get('replacing') ?? undefined));
         }
         if (assisted?.[2] === 'payment-links' && method === 'POST') {
           return json(response, 201, booking.sendStaffPaymentLink(actor, assisted[1], await staffBody(request)));
+        }
+        if (assisted?.[2] === 'payment-links' && method === 'GET') {
+          return json(response, 200, booking.staffPaymentLinks(actor, assisted[1]));
+        }
+        const replacement = path.match(/^\/api\/staff\/shops\/([\w-]+)\/payment-links\/([\w-]+)\/replace$/);
+        if (replacement && method === 'POST') {
+          return json(response, 201, booking.sendStaffPaymentLink(actor, replacement[1], await staffBody(request), replacement[2]));
         }
         const shopCopy = path.match(/^\/api\/staff\/shops\/([\w-]+)\/copy-configuration$/);
         if (shopCopy && method === 'POST') {
@@ -245,7 +253,8 @@ export function createApp({
       const widgetOffer = path.match(/^\/api\/widgets\/([\w-]+)\/offer$/);
       if (method === 'GET' && widgetOffer) {
         const shopId = widgets.selectedShop(widgetOffer[1], url.searchParams.get('shopId'));
-        return json(response, 200, booking.offer(shopId, url.searchParams.get('pickupAt') ?? undefined, 'widget', url.searchParams.get('language') ?? undefined));
+        const language = url.searchParams.get('language') ?? undefined;
+        return json(response, 200, booking.offer(shopId, url.searchParams.get('pickupAt') ?? undefined, { language }));
       }
       const widgetCheckout = path.match(/^\/api\/widgets\/([\w-]+)\/checkouts$/);
       if (method === 'POST' && widgetCheckout) {
@@ -256,7 +265,7 @@ export function createApp({
       if (method === 'GET' && path === '/api/offer') {
         return json(response, 200, booking.offer(
           url.searchParams.get('shopId') ?? undefined, url.searchParams.get('pickupAt') ?? undefined,
-          'widget', url.searchParams.get('language') ?? undefined,
+          { language: url.searchParams.get('language') ?? undefined },
         ));
       }
       if (method === 'POST' && path === '/api/checkouts') return json(response, 201, booking.hold(await body(request)));

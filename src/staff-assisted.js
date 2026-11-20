@@ -1,5 +1,5 @@
 import { OperationError } from './operation-error.js';
-import { renterItem, renterShop, shopLanguages, validateLanguage } from './renter-language.js';
+import { renterItem, renterShop, validateLanguage } from './renter-language.js';
 
 const dateTime = new Intl.DateTimeFormat('pl-PL', {
   timeZone: 'Europe/Warsaw', dateStyle: 'short', timeStyle: 'short',
@@ -30,13 +30,11 @@ export function openStaffAssisted(db, management) {
   const read = db.prepare('SELECT * FROM staff_payment_links WHERE checkout_id = ?');
   const insert = db.prepare('INSERT INTO staff_payment_links VALUES (?, ?, ?, ?, ?, ?)');
 
-  const languages = (shopId) => shopLanguages(management.publicShop(shopId).shop);
   const checkoutUrl = (id) => '/staff-checkout/' + id;
 
   return {
     get: (id) => read.get(id),
     checkoutUrl,
-    languages,
     validateLanguage(shopId, language) {
       validateLanguage(management.publicShop(shopId).shop, language);
     },

@@ -37,6 +37,7 @@ async function load() {
     refund_started: t('Nie możemy zrealizować Twojej rezerwacji. Zleciliśmy pełny zwrot płatności.', 'We cannot fulfil your booking. We have initiated a full refund.'),
     cancelled: t('Rezerwacja anulowana.', 'Booking cancelled.'),
     no_show: t('Sprzęt nieodebrany.', 'Equipment not collected.'),
+    replaced: t('Ten link do płatności został zastąpiony. Użyj ostatniego linku od obsługi.', 'This payment link has been replaced. Use the latest link from the shop.'),
   };
   get('shop-name').textContent = shop.name;
   get('shop-description').textContent = shop.description;

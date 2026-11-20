@@ -25,7 +25,8 @@ async function checkBooking(app, renter, result) {
   await renter.getByText(terms, { exact: false }).waitFor();
   await renter.getByRole('button', { name: 'Cancel booking' }).click();
   await renter.getByText('Booking cancelled', { exact: true }).waitFor();
-  const privateView = await app.request('/api' + new URL(renter.url()).pathname);
+  const token = new URL(renter.url()).pathname.split('/').at(-1);
+  const privateView = await app.request('/api/bookings/' + token);
   assert.equal(privateView.body.language, 'en');
   assert.equal(privateView.body.status, 'cancelled');
   assert.equal(result.status, 200);
@@ -68,6 +69,7 @@ test('Widget booking keeps English through private resume, simulated payment, co
   renter.setDefaultTimeout(5000);
   await renter.goto(app.origin + message.resumeUrl);
   await renter.getByRole('button', { name: 'Confirm current selection' }).click();
+  await renter.getByLabel('Email address').waitFor();
   assert.equal(await renter.getByLabel('Email address').inputValue(), 'english-widget@example.test');
   await renter.getByLabel('Rider height (cm)', { exact: true }).fill('178');
   await renter.getByLabel('I accept the rental terms').check();
