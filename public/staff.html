@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rezerwacje punktu</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script type="module" src="/assets/staff.js"></script>
+</head>
+<body>
+  <main class="staff-layout">
+    <section class="booking-card" aria-labelledby="page-title">
+      <h1 id="page-title">Rezerwacje punktu</h1>
+      <a href="/staff/owner-dashboard" id="owner-dashboard-link" hidden>Wyniki Partnera</a>
+      <p id="error" class="error" role="alert" hidden></p>
+      <p id="saved" role="status" hidden></p>
+      <label for="staff-shop" id="staff-shop-label" hidden>Punkt</label>
+      <select id="staff-shop" hidden></select>
+      <button id="refresh-bookings" type="button" class="secondary" hidden>Odśwież rezerwacje</button>
+      <p id="no-shops" hidden>Brak przypisanych punktów.</p>
+      <p id="empty" hidden>Brak potwierdzonych rezerwacji.</p>
+      <div class="table-container" id="list" hidden>
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Termin</th>
+              <th scope="col">Sprzęt</th>
+              <th scope="col">Kontakt</th>
+              <th scope="col">Wzrost</th>
+              <th scope="col">Przedpłata</th>
+              <th scope="col">Status</th>
+            </tr>
+          </thead>
+          <tbody id="reservations"></tbody>
+        </table>
+      </div>
+    </section>
+    <section class="booking-card" id="assisted-booking" aria-labelledby="assisted-title" hidden>
+      <h2 id="assisted-title">Rezerwacja przygotowana przez obsługę</h2>
+      <div id="staff-link-controls" hidden>
+        <label for="staff-link-to-replace">Link do poprawienia</label>
+        <select id="staff-link-to-replace"></select>
+      </div>
+      <p id="staff-no-slots" hidden>Brak dostępnych terminów.</p>
+      <form id="staff-payment-link">
+        <label for="staff-pickup">Termin odbioru</label>
+        <select id="staff-pickup" required></select>
+        <label for="staff-return">Termin zwrotu</label>
+        <select id="staff-return" required></select>
+        <fieldset>
+          <legend>Sprzęt</legend>
+          <div id="staff-quantities" class="equipment-quantities"></div>
+        </fieldset>
+        <label for="staff-renter-email">Adres e-mail klienta</label>
+        <input type="email" id="staff-renter-email" autocomplete="off" required maxlength="254">
+        <div id="staff-language-controls" hidden>
+          <label for="staff-checkout-language">Język wiadomości i płatności</label>
+          <select id="staff-checkout-language" name="language"></select>
+        </div>
+        <div class="total-line"><span>Razem</span><strong id="staff-selection-total">—</strong></div>
+        <button type="submit" disabled>Wyślij link do płatności</button>
+      </form>
+      <details id="staff-message" hidden open>
+        <summary>Wysłana wiadomość w symulatorze</summary>
+        <p id="staff-message-recipient"></p>
+        <p id="staff-message-content" class="rental-terms"></p>
+        <a id="staff-message-link">Otwórz prywatny link</a>
+      </details>
+    </section>
+    <section class="booking-card" id="shop-admin" aria-labelledby="shop-settings-title" hidden>
+      <h2 id="shop-settings-title">Ustawienia punktu</h2>
+      <p>Dostępna pula online</p>
+      <ul id="staff-stock"></ul>
+      <details id="owner-catalog" hidden>
+        <summary>Oferta i cennik</summary>
+        <div id="staff-catalog"></div>
+      </details>
+      <form id="copy-shop-configuration" hidden>
+        <label for="source-shop">Punkt źródłowy</label>
+        <select id="source-shop" name="sourceShopId" required aria-describedby="copy-shop-hint"></select>
+        <p id="copy-shop-hint" class="hint">Kopia zastąpi ustawienia i cennik wspólnych pozycji. Punkt zachowa własne ilości sprzętu, a nowe pozycje zaczną od zera.</p>
+        <button type="submit" class="secondary">Skopiuj konfigurację</button>
+      </form>
+      <form id="shop-renter-copy" hidden>
+        <fieldset>
+          <legend>Treści dla klientów</legend>
+          <label for="shop-description">Opis punktu po polsku</label>
+          <textarea id="shop-description" name="description" maxlength="2000"></textarea>
+          <label for="shop-name-en">Nazwa punktu po angielsku</label>
+          <input id="shop-name-en" name="nameEn" maxlength="120">
+          <label for="shop-description-en">Opis punktu po angielsku</label>
+          <textarea id="shop-description-en" name="descriptionEn" maxlength="2000"></textarea>
+          <label for="shop-terms-en">Warunki najmu po angielsku</label>
+          <textarea id="shop-terms-en" name="termsEn" maxlength="8000" rows="5" aria-describedby="shop-terms-help"></textarea>
+          <p class="hint" id="shop-terms-help">Zapisanie angielskich warunków udostępnia rezerwację w tym języku.</p>
+        </fieldset>
+        <button type="submit" class="secondary">Zapisz treści dla klientów</button>
+      </form>
+      <form id="shop-settings">
+        <label for="minimum-notice">Minimalne wyprzedzenie (minuty)</label>
+        <input id="minimum-notice" name="minimumNoticeMinutes" type="number" min="0" required>
+        <div id="owner-schedule" hidden>
+          <label for="booking-horizon">Horyzont rezerwacji (minuty)</label>
+          <input id="booking-horizon" name="bookingHorizonMinutes" type="number" min="30" required>
+          <label for="max-rental">Maksymalny czas najmu (minuty)</label>
+          <input id="max-rental" name="maxRentalMinutes" type="number" min="30" required>
+          <label for="turnaround-buffer">Bufor po zwrocie (minuty)</label>
+          <input id="turnaround-buffer" name="turnaroundBufferMinutes" type="number" min="0" required>
+          <fieldset>
+            <legend>Godziny otwarcia</legend>
+            <p class="hint">Wpisz przedziały w polskim czasie, np. 09:00–12:00, 13:00–17:30. Puste pole oznacza dzień zamknięty.</p>
+            <div id="opening-hours"></div>
+          </fieldset>
+          <label for="holiday-hours">Wyjątki według daty</label>
+          <textarea id="holiday-hours" rows="3" aria-describedby="holiday-hint"></textarea>
+          <p id="holiday-hint" class="hint">Jeden wyjątek w wierszu, np. 2027-01-01 10:00–14:00. Sama data oznacza dzień zamknięty.</p>
+        </div>
+        <button type="submit">Zapisz ustawienia punktu</button>
+      </form>
+    </section>
+    <section class="booking-card" id="partner-admin" aria-labelledby="partner-title" hidden>
+      <h2 id="partner-title">Partner</h2>
+      <form id="partner-settings">
+        <label for="partner-name">Nazwa prawna sprzedawcy</label>
+        <input id="partner-name" name="legalName" required maxlength="180">
+        <label for="partner-address">Adres sprzedawcy</label>
+        <input id="partner-address" name="address" required maxlength="180">
+        <label for="partner-nip">NIP</label>
+        <input id="partner-nip" name="nip" required pattern="[0-9]{10}" inputmode="numeric">
+        <button type="submit">Zapisz dane sprzedawcy</button>
+      </form>
+      <form id="create-shop">
+        <label for="new-shop-name">Nazwa nowego punktu</label>
+        <input id="new-shop-name" name="name" required maxlength="120">
+        <button type="submit">Dodaj punkt</button>
+      </form>
+    </section>
+    <section class="booking-card" id="policy-admin" aria-labelledby="policy-title" hidden>
+      <h2 id="policy-title">Polityka anulowania</h2>
+      <form id="cancellation-policy">
+        <label for="free-cancellation">Granica pełnego zwrotu (minuty przed odbiorem)</label>
+        <input id="free-cancellation" name="freeCancellationMinutes" type="number" min="0" max="527040" required>
+        <label for="late-refund">Późne anulowanie (procent zwrotu)</label>
+        <input id="late-refund" name="lateRefundPercent" type="number" min="0" max="100" required>
+        <label for="no-show-grace">Czas oczekiwania na odbiór (minuty)</label>
+        <input id="no-show-grace" name="noShowGraceMinutes" type="number" min="0" max="527040" required>
+        <button type="submit">Zapisz politykę anulowania</button>
+      </form>
+    </section>
+    <section class="booking-card" id="widgets-admin" aria-labelledby="widgets-heading" hidden>
+      <h2 id="widgets-heading">Widżety rezerwacji</h2>
+      <form id="widget-branding" aria-labelledby="widget-branding-heading">
+        <h3 id="widget-branding-heading">Wygląd widżetów</h3>
+        <label for="widget-logo-url">Adres HTTPS logo</label>
+        <input id="widget-logo-url" name="logoUrl" type="url" placeholder="https://" maxlength="2048">
+        <div class="widget-colors">
+          <div>
+            <label for="widget-accent-color">Kolor akcentu</label>
+            <input id="widget-accent-color" name="accentColor" type="color">
+          </div>
+          <div>
+            <label for="widget-background-color">Kolor tła</label>
+            <input id="widget-background-color" name="backgroundColor" type="color">
+          </div>
+        </div>
+        <button type="submit">Zapisz wygląd</button>
+      </form>
+      <form id="create-widget" aria-labelledby="create-widget-heading">
+        <h3 id="create-widget-heading">Utwórz widżet</h3>
+        <label for="new-widget-name">Nazwa widżetu</label>
+        <input id="new-widget-name" name="name" required maxlength="120">
+        <label for="new-widget-shop">Punkt widżetu</label>
+        <select id="new-widget-shop" name="shopId"></select>
+        <label for="new-widget-delivery">Sposób udostępnienia</label>
+        <select id="new-widget-delivery" name="delivery">
+          <option value="hosted">Strona hostowana</option>
+          <option value="inline">Formularz osadzony (inline)</option>
+          <option value="popup">Przycisk otwierający popup</option>
+        </select>
+        <button type="submit">Utwórz widżet</button>
+      </form>
+      <div id="widget-list" class="widget-list"></div>
+    </section>
+    <section class="booking-card" id="member-admin" aria-labelledby="member-title" hidden>
+      <h2 id="member-title">Pracownicy</h2>
+      <form id="create-member">
+        <label for="member-login">Login pracownika</label>
+        <input id="member-login" name="username" required minlength="3" maxlength="50" autocomplete="off">
+        <label for="member-password">Hasło początkowe</label>
+        <input id="member-password" name="password" required minlength="12" maxlength="128" autocomplete="new-password" type="password">
+        <button type="submit">Dodaj pracownika</button>
+      </form>
+      <form id="assignment" hidden>
+        <label for="assignment-member">Pracownik</label>
+        <select id="assignment-member" name="username" required></select>
+        <label for="assignment-shop">Przypisany punkt</label>
+        <select id="assignment-shop" name="shopId" required></select>
+        <label class="checkbox"><input name="assigned" type="checkbox"> Przypisz do punktu</label>
+        <label class="checkbox"><input name="canRefund" type="checkbox"> Może zatwierdzać zwroty</label>
+        <button type="submit">Zapisz uprawnienia</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

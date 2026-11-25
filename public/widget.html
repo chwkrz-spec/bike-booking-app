@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title data-en="Book a bike">Zarezerwuj rower</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script type="module" src="/assets/widget.js"></script>
+</head>
+<body>
+  <main class="booking-layout">
+    <section class="booking-card" aria-labelledby="page-title">
+      <img id="widget-logo" alt="Logo Partnera" referrerpolicy="no-referrer" hidden>
+      <p class="shop-name" id="shop-name"></p>
+      <p id="shop-description" hidden></p>
+      <h1 id="page-title" data-en="Book a bike">Zarezerwuj rower</h1>
+      <p id="error" class="error" role="alert" hidden></p>
+      <p id="loading" role="status" data-en="Checking available times…">Sprawdzamy dostępne terminy…</p>
+      <div id="shop-picker" hidden>
+        <label for="widget-shop" data-en="Choose a shop">Wybierz punkt</label>
+        <select id="widget-shop"></select>
+      </div>
+      <div id="language-picker" hidden>
+        <label for="renter-language">Język / Language</label>
+        <select id="renter-language">
+          <option value="pl" lang="pl">Polski</option>
+          <option value="en" lang="en">English</option>
+        </select>
+      </div>
+      <form id="selection" hidden>
+        <label for="slot" data-en="Pickup time">Termin odbioru</label>
+        <select id="slot" name="slot" required></select>
+        <label for="return" data-en="Return time">Termin zwrotu</label>
+        <select id="return" name="return" required></select>
+        <p id="no-slots" hidden data-en="No times available.">Brak dostępnych terminów.</p>
+        <p class="hint" data-en="Times shown in Warsaw local time">Godziny w czasie polskim</p>
+        <fieldset id="equipment">
+          <legend data-en="Equipment">Sprzęt</legend>
+          <div id="equipment-quantities"></div>
+        </fieldset>
+        <div class="total-line"><span data-en="Amount due">Do zapłaty</span><strong data-testid="total" id="selection-total"></strong></div>
+        <button type="submit" data-en="Confirm selection">Potwierdź wybór</button>
+      </form>
+      <div id="checkout-summary" hidden>
+        <p id="selected-slot"></p>
+        <div class="total-line"><span data-en="Amount due">Do zapłaty</span><strong id="checkout-total"></strong></div>
+      </div>
+      <form id="details" hidden>
+        <p class="deadline"><span data-en="Equipment held for ">Blokada sprzętu przez </span><time id="hold-deadline"></time></p>
+        <label for="email" data-en="Email address">Adres e-mail</label>
+        <input id="email" name="email" type="email" autocomplete="email" maxlength="254" required>
+        <label for="phone" data-en="Phone number">Numer telefonu</label>
+        <input id="phone" name="phone" type="tel" autocomplete="tel" maxlength="30" required>
+        <div id="rider-heights"></div>
+        <details>
+          <summary data-en="Rental terms">Warunki najmu</summary>
+          <p id="terms"></p>
+        </details>
+        <label class="checkbox"><input name="acceptedTerms" type="checkbox" required><span data-en=" I accept the rental terms"> Akceptuję warunki najmu</span></label>
+        <button type="submit" data-en="Pay">Zapłać</button>
+        <button id="send-resume" class="secondary" type="button" data-en="Email me a link to finish booking">Wyślij mi link do dokończenia rezerwacji</button>
+        <p id="resume-sent" role="status" hidden data-en="Your link was saved in a simulated message.">Link zapisano w symulowanej wiadomości.</p>
+        <a id="resume-message-link" hidden data-en="Open the link from the simulated message">Otwórz link z symulowanej wiadomości</a>
+        <p class="hint" data-en="The payment simulator will open in a separate window.">Symulator płatności otworzy się w osobnym oknie.</p>
+      </form>
+      <section id="resume-reconfirm" hidden>
+        <h2 data-en="Review the current time and price">Potwierdź ponownie termin i cenę</h2>
+        <p data-en="Your checkout hold has expired. Confirm the current selection to start a new 15-minute hold.">Poprzednia blokada wygasła. Ponowne potwierdzenie rozpocznie nową blokadę na 15 minut.</p>
+        <button id="resume-confirm" type="button" data-en="Confirm current selection">Potwierdź aktualny wybór</button>
+      </section>
+      <section id="payment-pending" aria-labelledby="payment-heading" hidden>
+        <h2 id="payment-heading" data-en="Payment in progress">Płatność w toku</h2>
+        <p class="deadline"><span data-en="Time left to pay ">Czas na płatność </span><time id="widget-payment-deadline"></time></p>
+        <a class="button secondary" id="reopen-payment" target="_blank" rel="noopener" data-en="Open the payment simulator">Otwórz symulator płatności</a>
+      </section>
+      <section id="confirmation" aria-labelledby="confirmation-heading" hidden>
+        <h2 id="confirmation-heading" data-en="Booking confirmed">Rezerwacja potwierdzona</h2>
+        <p id="booking-number"></p>
+        <p><span data-en="Simulated confirmation sent to ">Adres potwierdzenia w symulatorze </span><strong id="confirmation-email"></strong></p>
+        <p><a id="manage-booking" data-en="View booking">Szczegóły i anulowanie rezerwacji</a></p>
+        <button id="new-booking" class="secondary" type="button" data-en="Book another bike">Zarezerwuj kolejny rower</button>
+      </section>
+    </section>
+    <aside class="seller-card" aria-labelledby="seller-title" id="seller" hidden>
+      <h2 id="seller-title" data-en="Seller">Sprzedawca</h2>
+      <strong id="legal-name"></strong>
+      <p id="seller-address"></p>
+      <p id="seller-nip"></p>
+    </aside>
+  </main>
+</body>
+</html>

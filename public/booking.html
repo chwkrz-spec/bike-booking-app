@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title data-en="Your booking">Szczegóły rezerwacji</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script type="module" src="/assets/booking.js"></script>
+</head>
+<body>
+  <main class="staff-layout">
+    <section class="booking-card" aria-labelledby="page-title">
+      <h1 id="page-title" data-en="Your booking">Szczegóły rezerwacji</h1>
+      <p id="error" class="error" role="alert" hidden></p>
+      <p id="loading" role="status" data-en="Loading your booking…">Sprawdzamy rezerwację…</p>
+      <div id="booking" hidden>
+        <p id="booking-status" role="status"></p>
+        <p id="booking-number"></p>
+        <p id="shop-name"></p>
+        <p id="rental-period"></p>
+        <p id="rental-items"></p>
+        <div class="total-line"><span data-en="Prepayment">Przedpłata</span><strong id="rental-total"></strong></div>
+        <p id="refund-explanation" hidden><span id="refund-label"></span> <strong id="refund-total" data-testid="cancellation-refund"></strong></p>
+        <details>
+          <summary data-en="Accepted rental terms">Zaakceptowane warunki najmu</summary>
+          <p id="terms"></p>
+          <p id="accepted-at"></p>
+          <p id="cancellation-cutoff"></p>
+        </details>
+        <form id="cancel-booking" hidden>
+          <p data-en="This will cancel the entire booking.">Ta operacja anuluje całą rezerwację.</p>
+          <button type="submit" data-en="Cancel booking">Anuluj całą rezerwację</button>
+        </form>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
